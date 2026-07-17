@@ -1,0 +1,25 @@
+# Rust
+/target
+**/target
+Cargo.lock.bak
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# macOS
+.DS_Store
+
+# Local index / db artifacts (never commit message data)
+*.db
+*.db-wal
+*.db-shm
+!**/fixtures/**/*.db
+
+# Env / secrets
+.env
+.env.*
+
+# Logs
+*.log
