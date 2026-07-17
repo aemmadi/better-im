@@ -27,4 +27,4 @@ pub mod reader;
 pub use models::{
     Attachment, Capability, Conversation, Handle, Message, MessageActionProvider, ReadOnlyProvider,
 };
-pub use reader::{apple_time_to_utc, ChatReader, Stats};
+pub use reader::{apple_time_to_utc, ChatReader, ScannedMessage, Stats};

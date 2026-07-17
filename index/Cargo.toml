@@ -1,0 +1,37 @@
+[package]
+name = "better-im-index"
+version = "0.1.0"
+edition = "2021"
+description = "Search index + query engine over an iMessage chat.db for better-im (Phase 1)"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "better_im_index"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-im-index"
+path = "src/bin/cli.rs"
+
+[dependencies]
+better-im-core = { path = "../core" }
+# SQLite + FTS5 via the SAME `libsqlite3-sys` (bundled) that `core` links through
+# `imessage-database`. Using rusqlite here (rather than the `libsql` crate) keeps
+# a SINGLE SQLite in the binary: libSQL bundles its own SQLite, which collides
+# (duplicate `sqlite3_*` symbols) with core's bundled copy. See lib.rs for the
+# full rationale and the Phase 5 (native vector search) migration path.
+rusqlite = { version = "=0.40.0", features = ["blob", "bundled"] }
+# FSEvents-backed file watching on macOS.
+notify = "6"
+dirs = "5"
+regex = "1"
+# Pinned to match imessage-database's `=0.4.44` requirement (via core).
+chrono = { version = "=0.4.44", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# Build synthetic chat.db fixtures on the fly (mirrors the Phase 0 test helper).
+rusqlite = { version = "=0.40.0", features = ["blob", "bundled"] }
+tempfile = "3"

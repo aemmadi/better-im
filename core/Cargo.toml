@@ -3,6 +3,7 @@ name = "better-im-core"
 version = "0.1.0"
 edition = "2021"
 description = "Headless read-only iMessage chat.db reader for better-im (Phase 0)"
+license = "GPL-3.0-or-later"
 
 [lib]
 name = "better_im_core"

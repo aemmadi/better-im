@@ -86,6 +86,13 @@ pub struct Message {
     pub sender: Option<String>,
     /// Whether the database owner sent this message.
     pub is_from_me: bool,
+    /// Raw service name (`iMessage`, `SMS`, `RCS`, …), when recorded.
+    pub service: Option<String>,
+    /// Sender `handle.ROWID`, when known (useful for stable joins in the index).
+    pub handle_id: Option<i64>,
+    /// Message `item_type` code (0 = ordinary message, non-zero = group action,
+    /// etc.). Stored as-is so downstream layers can classify without re-reading.
+    pub item_type: i32,
     /// Extracted plain body text (from `text` **or** decoded `attributedBody`).
     pub text: Option<String>,
     /// Message timestamp, converted from the Apple epoch to UTC.

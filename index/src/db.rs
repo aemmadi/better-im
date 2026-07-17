@@ -1,0 +1,393 @@
+//! SQLite/FTS5-backed index database (via `rusqlite`): schema, writes, and
+//! read/search queries.
+
+use std::path::Path;
+
+use anyhow::Context;
+use chrono::Utc;
+use rusqlite::types::Value;
+use rusqlite::{params_from_iter, Connection, Row};
+
+use crate::model::{IndexedMessage, SearchOpts, SearchResult};
+use crate::query::{Filters, ParsedQuery};
+use crate::schema::SCHEMA;
+
+/// The message columns selected (in order) for row decoding. Indices 0..=16.
+const MESSAGE_SELECT: &str = "\
+    m.id, m.guid, m.chat_id, m.canonical_chat_id, m.chat_identifier, m.chat_name, \
+    m.handle_id, m.sender, m.is_from_me, m.text, m.ts_millis, m.ts_utc, \
+    m.has_attachment, m.has_photo, m.has_link, m.service, m.msg_type";
+
+/// Upsert statement for the denormalized `messages` table (17 bound params).
+const UPSERT_SQL: &str = "\
+    INSERT INTO messages \
+      (id, guid, chat_id, canonical_chat_id, chat_identifier, chat_name, handle_id, sender, text, \
+       ts_millis, ts_utc, is_from_me, has_attachment, has_photo, has_link, service, msg_type) \
+    VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17) \
+    ON CONFLICT(id) DO UPDATE SET \
+      guid=excluded.guid, chat_id=excluded.chat_id, canonical_chat_id=excluded.canonical_chat_id, \
+      chat_identifier=excluded.chat_identifier, chat_name=excluded.chat_name, \
+      handle_id=excluded.handle_id, sender=excluded.sender, text=excluded.text, \
+      ts_millis=excluded.ts_millis, ts_utc=excluded.ts_utc, is_from_me=excluded.is_from_me, \
+      has_attachment=excluded.has_attachment, has_photo=excluded.has_photo, \
+      has_link=excluded.has_link, service=excluded.service, msg_type=excluded.msg_type";
+
+/// A handle to the index database (a standard SQLite file with an FTS5 index).
+pub struct IndexDb {
+    conn: Connection,
+}
+
+impl IndexDb {
+    /// Open (creating if needed) the index database at `path` and apply the
+    /// schema. Idempotent — safe to call on an existing index.
+    ///
+    /// # Errors
+    /// Returns an error if the database cannot be opened or the schema fails.
+    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let conn = Connection::open(path.as_ref())
+            .with_context(|| format!("opening index db at {}", path.as_ref().display()))?;
+        conn.execute_batch(SCHEMA).context("applying index schema")?;
+        Ok(Self { conn })
+    }
+
+    /// Borrow the underlying connection (escape hatch for Phase 5 vector queries
+    /// and ad-hoc reads).
+    #[must_use]
+    pub fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Remove every indexed message (and, via triggers, its FTS entries). Used
+    /// by a full reindex before repopulating.
+    ///
+    /// # Errors
+    /// Returns an error if the delete fails.
+    pub fn clear(&self) -> anyhow::Result<()> {
+        self.conn.execute("DELETE FROM messages", [])?;
+        Ok(())
+    }
+
+    /// Upsert a batch of messages in one transaction. Returns the number of rows
+    /// written.
+    ///
+    /// # Errors
+    /// Returns an error if any statement fails; the transaction is rolled back.
+    pub fn upsert_messages(&self, messages: &[IndexedMessage]) -> anyhow::Result<usize> {
+        if messages.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(UPSERT_SQL)?;
+            for msg in messages {
+                stmt.execute(params_from_iter(upsert_params(msg)))?;
+            }
+        }
+        tx.commit()?;
+        Ok(messages.len())
+    }
+
+    /// Current incremental-sync watermark (highest indexed `message.ROWID`).
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn watermark(&self) -> anyhow::Result<i64> {
+        let v: i64 = self.conn.query_row(
+            "SELECT last_rowid FROM sync_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(v)
+    }
+
+    /// Record a new watermark. When `full` is set, also stamps the
+    /// last-full-reindex time; always stamps the last-sync time.
+    ///
+    /// # Errors
+    /// Returns an error if the update fails.
+    pub fn set_watermark(&self, watermark: i64, full: bool) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        if full {
+            self.conn.execute(
+                "UPDATE sync_state SET last_rowid = ?1, last_full_reindex_at = ?2, last_sync_at = ?2 WHERE id = 1",
+                rusqlite::params![watermark, now],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE sync_state SET last_rowid = ?1, last_sync_at = ?2 WHERE id = 1",
+                rusqlite::params![watermark, now],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Total number of indexed messages.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn message_count(&self) -> anyhow::Result<i64> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?;
+        Ok(n)
+    }
+
+    /// Run a parsed query: FTS5 BM25 ranking when there is free text, otherwise a
+    /// chronological filter-only listing. Filters are applied as SQL `WHERE`
+    /// clauses in both paths.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn search(
+        &self,
+        query: &ParsedQuery,
+        opts: SearchOpts,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        let (filter_sql, filter_params) = build_filter_clauses(&query.filters);
+
+        let (sql, params) = if let Some(ref fts) = query.fts {
+            let sql = format!(
+                "SELECT {cols}, \
+                     snippet(messages_fts, 0, '[', ']', '…', 12) AS snip, \
+                     bm25(messages_fts) AS score \
+                 FROM messages_fts \
+                 JOIN messages m ON m.id = messages_fts.rowid \
+                 WHERE messages_fts MATCH ?1 {filters} \
+                 ORDER BY score \
+                 LIMIT ? OFFSET ?",
+                cols = MESSAGE_SELECT,
+                filters = filter_sql,
+            );
+            let mut params = vec![Value::Text(fts.clone())];
+            params.extend(filter_params);
+            params.push(Value::Integer(opts.limit as i64));
+            params.push(Value::Integer(opts.offset as i64));
+            (sql, params)
+        } else {
+            let sql = format!(
+                "SELECT {cols}, \
+                     substr(COALESCE(m.text, ''), 1, 160) AS snip, \
+                     0.0 AS score \
+                 FROM messages m \
+                 WHERE 1 = 1 {filters} \
+                 ORDER BY m.ts_millis DESC \
+                 LIMIT ? OFFSET ?",
+                cols = MESSAGE_SELECT,
+                filters = filter_sql,
+            );
+            let mut params = filter_params;
+            params.push(Value::Integer(opts.limit as i64));
+            params.push(Value::Integer(opts.offset as i64));
+            (sql, params)
+        };
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(params), |row| {
+            let message = row_to_message(row)?;
+            let snippet: Option<String> = row.get(17)?;
+            let score: f64 = row.get(18)?;
+            Ok(SearchResult {
+                message,
+                snippet: snippet.unwrap_or_default(),
+                score,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Fetch a single indexed message by source `message.ROWID`.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_message(&self, id: i64) -> anyhow::Result<Option<IndexedMessage>> {
+        let sql = format!("SELECT {MESSAGE_SELECT} FROM messages m WHERE m.id = ?1");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query_map(rusqlite::params![id], row_to_message)?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Fetch conversational context around a message: up to `before` messages
+    /// preceding it and `after` following it within the same canonical chat,
+    /// returned in chronological order (the target included).
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn message_context(
+        &self,
+        id: i64,
+        before: usize,
+        after: usize,
+    ) -> anyhow::Result<Vec<IndexedMessage>> {
+        let Some(target) = self.get_message(id)? else {
+            return Ok(Vec::new());
+        };
+        // Prefer the canonical chat grouping; fall back to raw chat id.
+        let (chat_col, chat_val) = match target.canonical_chat_id {
+            Some(c) => ("canonical_chat_id", c),
+            None => match target.chat_id {
+                Some(c) => ("chat_id", c),
+                None => return Ok(vec![target]),
+            },
+        };
+
+        let preceding_sql = format!(
+            "SELECT {MESSAGE_SELECT} FROM messages m \
+             WHERE m.{chat_col} = ?1 AND (m.ts_millis < ?2 OR (m.ts_millis = ?2 AND m.id < ?3)) \
+             ORDER BY m.ts_millis DESC, m.id DESC LIMIT ?4"
+        );
+        let following_sql = format!(
+            "SELECT {MESSAGE_SELECT} FROM messages m \
+             WHERE m.{chat_col} = ?1 AND (m.ts_millis > ?2 OR (m.ts_millis = ?2 AND m.id > ?3)) \
+             ORDER BY m.ts_millis ASC, m.id ASC LIMIT ?4"
+        );
+
+        let mut preceding = self.collect_messages(
+            &preceding_sql,
+            rusqlite::params![chat_val, target.timestamp_millis, target.id, before as i64],
+        )?;
+        preceding.reverse();
+
+        let following = self.collect_messages(
+            &following_sql,
+            rusqlite::params![chat_val, target.timestamp_millis, target.id, after as i64],
+        )?;
+
+        let mut out = preceding;
+        out.push(target);
+        out.extend(following);
+        Ok(out)
+    }
+
+    /// Run a `SELECT {MESSAGE_SELECT} ...` query and decode all rows.
+    fn collect_messages(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> anyhow::Result<Vec<IndexedMessage>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params, row_to_message)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+}
+
+/// Build the params for one upsert (matches `UPSERT_SQL` order).
+fn upsert_params(m: &IndexedMessage) -> Vec<Value> {
+    vec![
+        Value::Integer(m.id),
+        Value::Text(m.guid.clone()),
+        opt_i64(m.chat_id),
+        opt_i64(m.canonical_chat_id),
+        opt_str(&m.chat_identifier),
+        opt_str(&m.chat_name),
+        opt_i64(m.handle_id),
+        opt_str(&m.sender),
+        opt_str(&m.text),
+        Value::Integer(m.timestamp_millis),
+        m.timestamp
+            .map(|t| Value::Text(t.to_rfc3339()))
+            .unwrap_or(Value::Null),
+        Value::Integer(i64::from(m.is_from_me)),
+        Value::Integer(i64::from(m.has_attachment)),
+        Value::Integer(i64::from(m.has_photo)),
+        Value::Integer(i64::from(m.has_link)),
+        opt_str(&m.service),
+        Value::Integer(i64::from(m.msg_type)),
+    ]
+}
+
+/// Build ` AND ...` filter SQL and its bound params from [`Filters`].
+fn build_filter_clauses(filters: &Filters) -> (String, Vec<Value>) {
+    let mut sql = String::new();
+    let mut params: Vec<Value> = Vec::new();
+
+    for who in &filters.from {
+        sql.push_str(" AND m.sender IS NOT NULL AND lower(m.sender) LIKE ?");
+        params.push(Value::Text(contains(who)));
+    }
+    for chat in &filters.in_chat {
+        sql.push_str(
+            " AND (lower(COALESCE(m.chat_name,'')) LIKE ? \
+                   OR lower(COALESCE(m.chat_identifier,'')) LIKE ? \
+                   OR m.chat_id = ? OR m.canonical_chat_id = ?)",
+        );
+        let like = contains(chat);
+        let numeric = chat.parse::<i64>().unwrap_or(i64::MIN);
+        params.push(Value::Text(like.clone()));
+        params.push(Value::Text(like));
+        params.push(Value::Integer(numeric));
+        params.push(Value::Integer(numeric));
+    }
+    if let Some(before) = filters.before {
+        sql.push_str(" AND m.ts_millis > 0 AND m.ts_millis < ?");
+        params.push(Value::Integer(before));
+    }
+    if let Some(after) = filters.after {
+        sql.push_str(" AND m.ts_millis >= ?");
+        params.push(Value::Integer(after));
+    }
+    if filters.has_attachment {
+        sql.push_str(" AND m.has_attachment = 1");
+    }
+    if filters.has_photo {
+        sql.push_str(" AND m.has_photo = 1");
+    }
+    if filters.has_link {
+        sql.push_str(" AND m.has_link = 1");
+    }
+    if let Some(from_me) = filters.is_from_me {
+        sql.push_str(" AND m.is_from_me = ?");
+        params.push(Value::Integer(i64::from(from_me)));
+    }
+
+    (sql, params)
+}
+
+/// Decode the leading 17 columns (`MESSAGE_SELECT`) of a row into a message.
+fn row_to_message(row: &Row) -> rusqlite::Result<IndexedMessage> {
+    let timestamp_millis: i64 = row.get(10)?;
+    Ok(IndexedMessage {
+        id: row.get(0)?,
+        guid: row.get(1)?,
+        chat_id: row.get(2)?,
+        canonical_chat_id: row.get(3)?,
+        chat_identifier: row.get(4)?,
+        chat_name: row.get(5)?,
+        handle_id: row.get(6)?,
+        sender: row.get(7)?,
+        is_from_me: row.get::<_, i64>(8)? != 0,
+        text: row.get(9)?,
+        timestamp_millis,
+        timestamp: IndexedMessage::datetime_from_millis(timestamp_millis),
+        has_attachment: row.get::<_, i64>(12)? != 0,
+        has_photo: row.get::<_, i64>(13)? != 0,
+        has_link: row.get::<_, i64>(14)? != 0,
+        service: row.get(15)?,
+        msg_type: row.get::<_, i64>(16)? as i32,
+    })
+}
+
+fn opt_str(o: &Option<String>) -> Value {
+    o.as_ref()
+        .map(|s| Value::Text(s.clone()))
+        .unwrap_or(Value::Null)
+}
+
+fn opt_i64(o: Option<i64>) -> Value {
+    o.map(Value::Integer).unwrap_or(Value::Null)
+}
+
+/// `%value%` (lowercased) for a case-insensitive `LIKE` contains-match.
+fn contains(value: &str) -> String {
+    format!("%{}%", value.to_lowercase())
+}
