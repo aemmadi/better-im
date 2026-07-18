@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { MessageBubble } from "./MessageBubble";
 import { useMessageContext, useThread, THREAD_PAGE } from "../queries";
 import { api } from "../api";
+import { useContactMap } from "../lib/contacts";
 import type { MessageDto } from "../types";
 
 interface Props {
@@ -44,6 +45,13 @@ export function ThreadView({ chatId, title, focusMessageId }: Props) {
     () => (isContext ? base : [...olderPages, ...base]),
     [isContext, base, olderPages],
   );
+
+  // Resolve every distinct incoming sender in this thread to a contact.
+  const senderHandles = useMemo(
+    () => messages.filter((m) => !m.isFromMe).map((m) => m.sender),
+    [messages],
+  );
+  const contacts = useContactMap(senderHandles);
 
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -150,6 +158,8 @@ export function ThreadView({ chatId, title, focusMessageId }: Props) {
                 <MessageBubble
                   message={m}
                   showSender={shouldShowSender(messages, row.index)}
+                  senderName={contacts.name(m.sender)}
+                  senderAvatarUrl={contacts.avatar(m.sender)}
                   highlighted={isContext && m.id === focusMessageId}
                 />
               </div>

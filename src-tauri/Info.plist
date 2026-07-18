@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Contacts (TCC) usage string. Tauri merges this file into the generated
+	  Info.plist for both `tauri dev` and the bundled .app, so the string is
+	  present when CNContactStore triggers the system permission prompt. The app
+	  is intentionally NOT sandboxed (it needs Full Disk Access to read chat.db),
+	  so this usage string plus the TCC prompt is all that's required.
+	-->
+	<key>NSContactsUsageDescription</key>
+	<string>Better iMessage shows sender names and photos by matching message handles to your Contacts. Your contacts never leave your Mac.</string>
+</dict>
+</plist>

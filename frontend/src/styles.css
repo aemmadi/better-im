@@ -114,6 +114,18 @@ button {
   background: var(--bg-sidebar);
 }
 
+/* Non-blocking hint shown when Contacts access is off. */
+.contacts-hint {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.contacts-hint .link-button {
+  font-size: 12px;
+  padding: 0;
+}
+
 .splash {
   display: grid;
   place-items: center;
@@ -227,6 +239,21 @@ button {
   color: #fff;
   font-weight: 600;
   font-size: 15px;
+  overflow: hidden;
+}
+
+/* Contact-photo avatar: the color background is replaced by the image. */
+.avatar.avatar-img {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* Compact avatar used inline with a sender name in group message bubbles. */
+.avatar.avatar-sm {
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
 }
 
 .conversation-text {
@@ -340,10 +367,21 @@ button {
   align-items: flex-end;
 }
 
+.bubble-sender-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 2px 8px 2px;
+}
+
 .bubble-sender {
   font-size: 11px;
   color: var(--text-secondary);
   margin: 2px 8px 1px;
+}
+
+.bubble-sender-row .bubble-sender {
+  margin: 0;
 }
 
 .bubble {

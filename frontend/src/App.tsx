@@ -5,13 +5,14 @@ import { ThreadView } from "./components/ThreadView";
 import { SearchBar } from "./components/SearchBar";
 import { SearchResults } from "./components/SearchResults";
 import { FdaOnboarding } from "./components/FdaOnboarding";
-import { isFdaError } from "./api";
+import { api, isFdaError } from "./api";
 import {
   useConversations,
   useFdaStatus,
   useIndexStatus,
   useIndexUpdates,
 } from "./queries";
+import { useContactsPermission } from "./lib/contacts";
 import { formatFull } from "./lib/format";
 import type { ConversationDto, SearchResultDto } from "./types";
 
@@ -38,6 +39,7 @@ function MainLayout() {
   const qc = useQueryClient();
   const conversations = useConversations(true);
   const indexStatus = useIndexStatus(true);
+  const contactsPermission = useContactsPermission();
 
   const [selectedChat, setSelectedChat] = useState<ConversationDto | null>(null);
   const [focusMessageId, setFocusMessageId] = useState<number | null>(null);
@@ -128,11 +130,24 @@ function MainLayout() {
             ? `${indexStatus.data.count.toLocaleString()} messages indexed`
             : "Index status…"}
         </span>
-        <span className="muted">
-          {indexStatus.data?.lastSynced
-            ? `Last synced ${formatFull(indexStatus.data.lastSynced)}`
-            : ""}
-        </span>
+        {contactsPermission.isBlocked ? (
+          <span className="contacts-hint muted">
+            Contacts access is off — showing raw numbers.{" "}
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => api.openContactsSettings()}
+            >
+              Enable in System Settings ›
+            </button>
+          </span>
+        ) : (
+          <span className="muted">
+            {indexStatus.data?.lastSynced
+              ? `Last synced ${formatFull(indexStatus.data.lastSynced)}`
+              : ""}
+          </span>
+        )}
       </footer>
     </div>
   );

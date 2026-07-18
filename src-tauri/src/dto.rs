@@ -210,3 +210,20 @@ pub struct IndexStatusDto {
     /// ISO-8601 timestamp of the last successful sync, when known.
     pub last_synced: Option<String>,
 }
+
+/// The resolved identity for a single `chat.db` handle (phone/email). Returned
+/// by `resolve_contacts`, keyed by the raw identifier that was requested.
+///
+/// Best-effort: an unmatched identifier still comes back with a nicely formatted
+/// `display_name` (and `matched = false`), so the UI never has to special-case a
+/// missing entry.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactInfoDto {
+    /// Contacts display name when matched, else a formatted version of the handle.
+    pub display_name: String,
+    /// `thumbnailImageData` as a `data:` URL, when the matched contact has a photo.
+    pub avatar_data_url: Option<String>,
+    /// Whether this identifier matched a card in the user's Contacts.
+    pub matched: bool,
+}

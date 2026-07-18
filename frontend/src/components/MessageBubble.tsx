@@ -1,12 +1,16 @@
 import { forwardRef } from "react";
 import type { MessageDto } from "../types";
 import { formatTime, formatFull } from "../lib/format";
-import { resolveSenderName } from "../lib/contacts";
+import { Avatar } from "./Avatar";
 
 interface Props {
   message: MessageDto;
-  /** Show the sender name above the bubble (group threads / first of a run). */
+  /** Show the sender name/avatar above the bubble (group threads / first of a run). */
   showSender: boolean;
+  /** Resolved sender display name (Contacts name or formatted handle). */
+  senderName: string;
+  /** Resolved sender avatar, if the contact has a photo. */
+  senderAvatarUrl?: string | null;
   highlighted?: boolean;
 }
 
@@ -18,9 +22,8 @@ function attachmentLabel(m: MessageDto): string {
 
 /** A single chat bubble. `forwardRef` so the virtualizer can measure height. */
 export const MessageBubble = forwardRef<HTMLDivElement, Props>(
-  ({ message, showSender, highlighted }, ref) => {
+  ({ message, showSender, senderName, senderAvatarUrl, highlighted }, ref) => {
     const mine = message.isFromMe;
-    const sender = resolveSenderName(mine, message.sender);
     const attachment = attachmentLabel(message);
     const hasText = !!message.text && message.text.length > 0;
 
@@ -30,7 +33,12 @@ export const MessageBubble = forwardRef<HTMLDivElement, Props>(
         className={`bubble-row ${mine ? "mine" : "theirs"}${highlighted ? " highlighted" : ""}`}
       >
         <div className="bubble-column">
-          {showSender && !mine && <span className="bubble-sender">{sender}</span>}
+          {showSender && !mine && (
+            <span className="bubble-sender-row">
+              <Avatar name={senderName} url={senderAvatarUrl} size="sm" />
+              <span className="bubble-sender">{senderName}</span>
+            </span>
+          )}
           <div className="bubble">
             {attachment && (
               <div className="attachment-placeholder">

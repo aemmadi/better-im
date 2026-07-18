@@ -65,3 +65,12 @@ export interface IndexStatusDto {
   count: number;
   lastSynced: string | null;
 }
+
+/** Resolved identity for one `chat.db` handle. Keyed by the requested identifier
+ * in the `resolve_contacts` response. Unmatched handles still carry a formatted
+ * `displayName` (with `matched: false`). */
+export interface ContactInfoDto {
+  displayName: string;
+  avatarDataUrl: string | null;
+  matched: boolean;
+}

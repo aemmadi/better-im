@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ContactInfoDto,
   ConversationDto,
   FdaStatus,
   IndexStatusDto,
@@ -39,4 +40,14 @@ export const api = {
   reindex: () => invoke<SyncReportDto>("reindex"),
 
   indexStatus: () => invoke<IndexStatusDto>("index_status"),
+
+  /** Batch-resolve raw handles (phones/emails) to Contacts identities. Returns a
+   * record keyed by the requested identifier. */
+  resolveContacts: (identifiers: string[]) =>
+    invoke<Record<string, ContactInfoDto>>("resolve_contacts", { identifiers }),
+
+  /** Current Contacts permission: authorized | denied | restricted | notDetermined. */
+  contactsPermissionStatus: () => invoke<string>("contacts_permission_status"),
+
+  openContactsSettings: () => invoke<void>("open_contacts_settings"),
 };

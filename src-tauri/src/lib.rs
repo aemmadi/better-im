@@ -5,6 +5,7 @@
 //! updates over the `index-updated` event.
 
 mod commands;
+mod contacts;
 mod dto;
 mod state;
 
@@ -36,6 +37,9 @@ pub fn run() {
             commands::get_message_context,
             commands::reindex,
             commands::index_status,
+            commands::resolve_contacts,
+            commands::contacts_permission_status,
+            commands::open_contacts_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Better iMessage");

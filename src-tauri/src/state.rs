@@ -1,5 +1,6 @@
 //! Application state, path resolution, and the background startup/sync task.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,7 +9,8 @@ use better_im_core::ChatReader;
 use better_im_index::{watch, IndexWatcher, Indexer, DEFAULT_DEBOUNCE};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::dto::SyncReportDto;
+use crate::contacts::ContactIndex;
+use crate::dto::{ContactInfoDto, SyncReportDto};
 
 /// Shared application state managed by Tauri.
 pub struct AppState {
@@ -27,6 +29,14 @@ pub struct AppState {
     /// startup task aborts because Full Disk Access was denied, so a later
     /// successful `fda_status` can retry without an app relaunch.
     pub sync_started: AtomicBool,
+    /// The built Contacts lookup index (Phase 3). `None` until the first
+    /// successful (authorized) enumeration, then cached so `resolve_contacts`
+    /// never re-enumerates the whole store. Stays `None` while permission is not
+    /// granted, so a later grant re-enumerates.
+    pub contact_index: Arc<Mutex<Option<Arc<ContactIndex>>>>,
+    /// Per-handle resolution cache, keyed by the raw `chat.db` identifier. Only
+    /// populated from an authoritative (authorized) index.
+    pub resolved_contacts: Arc<Mutex<HashMap<String, ContactInfoDto>>>,
 }
 
 impl AppState {
@@ -40,6 +50,8 @@ impl AppState {
             indexer: Arc::new(Mutex::new(indexer)),
             watcher: Arc::new(Mutex::new(None)),
             sync_started: AtomicBool::new(false),
+            contact_index: Arc::new(Mutex::new(None)),
+            resolved_contacts: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }

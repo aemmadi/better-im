@@ -3,13 +3,18 @@
 //! never blocked. Failures to read `chat.db` surface as `FDA_DENIED:`-prefixed
 //! errors the frontend routes to the onboarding screen.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use better_im_core::ChatReader;
 use better_im_index::SearchOpts;
 use chrono::{DateTime, Utc};
 use tauri::{AppHandle, State};
 
+use crate::contacts::{self, ContactIndex, PermissionStatus};
 use crate::dto::{
-    ConversationDto, FdaStatus, IndexStatusDto, MessageDto, SearchResultDto, SyncReportDto,
+    ContactInfoDto, ConversationDto, FdaStatus, IndexStatusDto, MessageDto, SearchResultDto,
+    SyncReportDto,
 };
 use crate::state::{ensure_started, map_sync_err, open_reader, AppState};
 
@@ -151,6 +156,87 @@ pub async fn reindex(state: State<'_, AppState>) -> Result<SyncReportDto, String
         let guard = indexer.lock().map_err(|e| e.to_string())?;
         let report = guard.full_reindex().map_err(map_sync_err)?;
         Ok(SyncReportDto::from(report))
+    })
+    .await
+}
+
+/// Current Contacts authorization status, as one of
+/// `authorized` / `denied` / `restricted` / `notDetermined`. Does **not** prompt
+/// (reading the status is side-effect-free); the prompt is triggered lazily by
+/// the first `resolve_contacts` call when the status is `notDetermined`.
+#[tauri::command]
+pub async fn contacts_permission_status() -> Result<String, String> {
+    run_blocking(|| Ok(contacts::store::permission_status().as_str().to_string())).await
+}
+
+/// Resolve a batch of `chat.db` handles (phones/emails) to Contacts identities.
+///
+/// Returns a map keyed by the *requested* identifier. Best-effort: unmatched
+/// identifiers still get a formatted `displayName` with `matched: false`, so the
+/// frontend can render every entry uniformly. Graceful when Contacts is denied —
+/// everything simply comes back unmatched.
+///
+/// Caching is two-tiered (both in `AppState`): the built [`ContactIndex`] is
+/// cached so the store is enumerated at most once, and each handle's resolved
+/// [`ContactInfoDto`] is memoized. All Contacts work happens on the blocking
+/// pool, never the webview thread.
+#[tauri::command]
+pub async fn resolve_contacts(
+    state: State<'_, AppState>,
+    identifiers: Vec<String>,
+) -> Result<HashMap<String, ContactInfoDto>, String> {
+    let index_slot = state.contact_index.clone();
+    let cache = state.resolved_contacts.clone();
+    run_blocking(move || {
+        // 1. Get the cached index, or build it once (holding the lock so two
+        //    concurrent first-calls can't both enumerate the store). The index is
+        //    only cached when authorized; otherwise we use an empty, non-cached
+        //    index so a later permission grant re-enumerates.
+        let (index, authoritative) = {
+            let mut guard = index_slot.lock().map_err(|e| e.to_string())?;
+            match guard.as_ref() {
+                Some(idx) => (idx.clone(), true),
+                None => {
+                    let loaded = contacts::store::load_contacts();
+                    if loaded.status == PermissionStatus::Authorized {
+                        let idx = Arc::new(ContactIndex::build(loaded.records));
+                        *guard = Some(idx.clone());
+                        (idx, true)
+                    } else {
+                        (Arc::new(ContactIndex::empty()), false)
+                    }
+                }
+            }
+        };
+
+        // 2. Resolve each handle, memoizing authoritative results.
+        let mut cache = cache.lock().map_err(|e| e.to_string())?;
+        let mut out = HashMap::with_capacity(identifiers.len());
+        for id in identifiers {
+            if let Some(hit) = cache.get(&id) {
+                out.insert(id, hit.clone());
+                continue;
+            }
+            let info = index.resolve(&id);
+            if authoritative {
+                cache.insert(id.clone(), info.clone());
+            }
+            out.insert(id, info);
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// Open the macOS Contacts privacy pane in System Settings (for the denied hint).
+#[tauri::command]
+pub async fn open_contacts_settings() -> Result<(), String> {
+    run_blocking(|| {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts")
+            .status()
+            .map_err(|e| format!("could not open System Settings: {e}"))?;
+        Ok(())
     })
     .await
 }

@@ -1,7 +1,8 @@
+import { useMemo } from "react";
 import { useSearch } from "../queries";
 import { renderSnippet } from "../lib/snippet";
 import { formatFull } from "../lib/format";
-import { resolveSenderName } from "../lib/contacts";
+import { useContactMap } from "../lib/contacts";
 import type { SearchResultDto } from "../types";
 
 interface Props {
@@ -16,6 +17,16 @@ function chatLabel(r: SearchResultDto): string {
 export function SearchResults({ query, onOpenResult }: Props) {
   const { data, isLoading, isError, error, isFetching } = useSearch(query);
   const results = data ?? [];
+
+  // Resolve the sender of each incoming result to a contact name.
+  const senderHandles = useMemo(
+    () => results.filter((r) => !r.isFromMe).map((r) => r.sender),
+    [results],
+  );
+  const contacts = useContactMap(senderHandles);
+
+  const senderLabel = (r: SearchResultDto): string =>
+    r.isFromMe ? "You" : contacts.name(r.sender);
 
   return (
     <div className="search-results">
@@ -39,9 +50,7 @@ export function SearchResults({ query, onOpenResult }: Props) {
             <li key={r.id}>
               <button className="result-row" onClick={() => onOpenResult(r)}>
                 <div className="result-top">
-                  <span className="result-sender">
-                    {resolveSenderName(r.isFromMe, r.sender)}
-                  </span>
+                  <span className="result-sender">{senderLabel(r)}</span>
                   <span className="result-chat">in {chatLabel(r)}</span>
                   <span className="result-date">{formatFull(r.timestamp)}</span>
                 </div>

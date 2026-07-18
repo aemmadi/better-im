@@ -29,3 +29,28 @@ better-im-index = { path = "../index" }
 # the workspace resolves a single chrono.
 chrono = { version = "=0.4.44", features = ["serde"] }
 anyhow = "1"
+
+# Contacts resolution (Phase 3). macOS-only: the objc2 stack talks to
+# `CNContactStore`. Versions are pinned to match the ones Tauri already pulls in
+# (objc2 0.6 / foundation 0.3 / block2 0.6 / dispatch2 0.3) so the workspace
+# resolves a single copy of each.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSArray",
+    "NSData",
+    "NSError",
+] }
+objc2-contacts = { version = "0.3", features = [
+    "CNContactStore",
+    "CNContact",
+    "CNContactFetchRequest",
+    "CNFetchRequest",
+    "CNLabeledValue",
+    "CNPhoneNumber",
+    "block2",
+] }
+block2 = "0.6"
+dispatch2 = "0.3"
+base64 = "0.22"
