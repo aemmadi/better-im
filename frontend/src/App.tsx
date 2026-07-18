@@ -5,6 +5,10 @@ import { ThreadView } from "./components/ThreadView";
 import { SearchBar } from "./components/SearchBar";
 import { SearchResults } from "./components/SearchResults";
 import { FdaOnboarding } from "./components/FdaOnboarding";
+import { GalleryView } from "./components/GalleryView";
+import { LinksView } from "./components/LinksView";
+import { InsightsView } from "./components/InsightsView";
+import { TimelineView } from "./components/TimelineView";
 import { api, isFdaError } from "./api";
 import {
   useConversations,
@@ -16,6 +20,16 @@ import { useContactsPermission } from "./lib/contacts";
 import { formatFull } from "./lib/format";
 import type { ConversationDto, SearchResultDto } from "./types";
 
+type CenterView = "chat" | "gallery" | "links" | "insights" | "timeline";
+
+const VIEW_TABS: { id: CenterView; label: string }[] = [
+  { id: "chat", label: "Chat" },
+  { id: "gallery", label: "Media" },
+  { id: "links", label: "Links" },
+  { id: "insights", label: "Insights" },
+  { id: "timeline", label: "Timeline" },
+];
+
 export default function App() {
   const fda = useFdaStatus();
 
@@ -25,10 +39,7 @@ export default function App() {
 
   if (!fda.data?.granted) {
     return (
-      <FdaOnboarding
-        onRecheck={() => fda.refetch()}
-        rechecking={fda.isFetching}
-      />
+      <FdaOnboarding onRecheck={() => fda.refetch()} rechecking={fda.isFetching} />
     );
   }
 
@@ -44,6 +55,7 @@ function MainLayout() {
   const [selectedChat, setSelectedChat] = useState<ConversationDto | null>(null);
   const [focusMessageId, setFocusMessageId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [centerView, setCenterView] = useState<CenterView>("chat");
 
   useIndexUpdates(selectedChat?.id ?? null);
 
@@ -53,12 +65,14 @@ function MainLayout() {
     setSelectedChat(c);
     setFocusMessageId(null);
     setSearchQuery("");
+    setCenterView("chat");
   };
 
   const openResult = (r: SearchResultDto) => {
     const cid = r.chatId ?? r.canonicalChatId ?? -1;
     const existing = convoList.find((c) => c.id === cid);
-    const label = existing?.label ?? r.chatName ?? r.chatIdentifier ?? "Conversation";
+    const label =
+      existing?.label ?? r.chatName ?? r.chatIdentifier ?? "Conversation";
     setSelectedChat(
       existing ?? {
         id: cid,
@@ -70,6 +84,12 @@ function MainLayout() {
       },
     );
     setFocusMessageId(r.id);
+    setSearchQuery("");
+    setCenterView("chat");
+  };
+
+  const selectView = (v: CenterView) => {
+    setCenterView(v);
     setSearchQuery("");
   };
 
@@ -87,10 +107,54 @@ function MainLayout() {
   }
 
   const searching = searchQuery.trim().length > 0;
+  const chatScope = selectedChat?.id ?? null;
+
+  const renderCenter = () => {
+    if (searching) {
+      return <SearchResults query={searchQuery} onOpenResult={openResult} />;
+    }
+    switch (centerView) {
+      case "timeline":
+        return <TimelineView />;
+      case "gallery":
+        return <GalleryView chatId={chatScope} />;
+      case "links":
+        return <LinksView chatId={chatScope} />;
+      case "insights":
+        return <InsightsView chatId={chatScope} />;
+      default:
+        return selectedChat ? (
+          <ThreadView
+            key={`${selectedChat.id}:${focusMessageId ?? "-"}`}
+            chatId={selectedChat.id}
+            title={selectedChat.label}
+            focusMessageId={focusMessageId}
+          />
+        ) : (
+          <div className="thread-empty">
+            Select a conversation to start reading, or search above.
+          </div>
+        );
+    }
+  };
 
   return (
     <div className="app">
       <header className="topbar">
+        <nav className="view-nav">
+          {VIEW_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`view-tab${
+                centerView === t.id && !searching ? " active" : ""
+              }`}
+              onClick={() => selectView(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
         <SearchBar
           value={searchQuery}
           onChange={setSearchQuery}
@@ -106,22 +170,7 @@ function MainLayout() {
           loading={conversations.isLoading}
         />
 
-        <main className="center">
-          {searching ? (
-            <SearchResults query={searchQuery} onOpenResult={openResult} />
-          ) : selectedChat ? (
-            <ThreadView
-              key={`${selectedChat.id}:${focusMessageId ?? "-"}`}
-              chatId={selectedChat.id}
-              title={selectedChat.label}
-              focusMessageId={focusMessageId}
-            />
-          ) : (
-            <div className="thread-empty">
-              Select a conversation to start reading, or search above.
-            </div>
-          )}
-        </main>
+        <main className="center">{renderCenter()}</main>
       </div>
 
       <footer className="statusbar">

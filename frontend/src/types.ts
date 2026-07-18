@@ -1,5 +1,6 @@
-// Shared TypeScript types mirroring the Rust DTOs in `src-tauri/src/dto.rs`.
-// Keep these in lockstep with that file — it is the single source of truth.
+// Shared TypeScript types mirroring the Rust DTOs in `src-tauri/src/dto.rs` and
+// `src-tauri/src/features/*.rs`. Keep these in lockstep with those files — they
+// are the single source of truth.
 
 export interface FdaStatus {
   granted: boolean;
@@ -73,4 +74,68 @@ export interface ContactInfoDto {
   displayName: string;
   avatarDataUrl: string | null;
   matched: boolean;
+}
+
+// ── Phase 4 feature DTOs (frozen contract) ─────────────────────────────────
+
+export interface MediaItemDto {
+  messageId: number;
+  chatId: number | null;
+  filename: string | null;
+  mimeType: string | null;
+  /** Absolute path under ~/Library/Messages/Attachments (asset-protocol source). */
+  absolutePath: string | null;
+  /** "image" | "video" | "audio" | "file". */
+  kind: string;
+  timestamp: string | null;
+  sender: string | null;
+  isFromMe: boolean;
+}
+
+export interface LinkItemDto {
+  messageId: number;
+  chatId: number | null;
+  url: string;
+  timestamp: string | null;
+  sender: string | null;
+  isFromMe: boolean;
+  chatName: string | null;
+}
+
+export interface DayCountDto {
+  date: string;
+  count: number;
+}
+
+export interface HourCountDto {
+  hour: number;
+  count: number;
+}
+
+export interface ContactCountDto {
+  handle: string;
+  count: number;
+}
+
+export interface InsightsDto {
+  totalMessages: number;
+  sentCount: number;
+  receivedCount: number;
+  firstMessage: string | null;
+  lastMessage: string | null;
+  byDay: DayCountDto[];
+  byHour: HourCountDto[];
+  topContacts: ContactCountDto[];
+}
+
+export interface TimelineItemDto {
+  id: number;
+  chatId: number | null;
+  chatLabel: string | null;
+  sender: string | null;
+  isFromMe: boolean;
+  text: string | null;
+  timestamp: string | null;
+  hasAttachment: boolean;
+  hasPhoto: boolean;
 }

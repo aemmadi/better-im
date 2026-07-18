@@ -1,12 +1,14 @@
-//! Better iMessage — Tauri application shell (Phase 2).
+//! Better iMessage — Tauri application shell (Phase 2+).
 //!
 //! Wires the headless `better-im-core` reader and `better-im-index` search index
 //! to a 3-pane webview UI, with Full Disk Access onboarding and live index
-//! updates over the `index-updated` event.
+//! updates over the `index-updated` event. Phase 4 adds read-only feature
+//! endpoints (media / links / insights / timeline) under `features`.
 
 mod commands;
 mod contacts;
 mod dto;
+mod features;
 mod state;
 
 use tauri::Manager;
@@ -40,6 +42,10 @@ pub fn run() {
             commands::resolve_contacts,
             commands::contacts_permission_status,
             commands::open_contacts_settings,
+            features::media::list_media,
+            features::links::list_links,
+            features::insights::get_insights,
+            features::timeline::timeline_feed,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Better iMessage");

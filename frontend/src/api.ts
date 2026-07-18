@@ -1,6 +1,6 @@
 // Typed wrappers over the Tauri `invoke` bridge. Command names and argument
-// shapes match `src-tauri/src/commands.rs` (Tauri converts camelCase JS keys to
-// snake_case Rust params automatically).
+// shapes match `src-tauri/src/commands.rs` + `src-tauri/src/features/*.rs`
+// (Tauri converts camelCase JS keys to snake_case Rust params automatically).
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -8,9 +8,13 @@ import type {
   ConversationDto,
   FdaStatus,
   IndexStatusDto,
+  InsightsDto,
+  LinkItemDto,
+  MediaItemDto,
   MessageDto,
   SearchResultDto,
   SyncReportDto,
+  TimelineItemDto,
 } from "./types";
 
 /** Sentinel prefix the backend puts on any failure to read `chat.db`. */
@@ -50,4 +54,22 @@ export const api = {
   contactsPermissionStatus: () => invoke<string>("contacts_permission_status"),
 
   openContactsSettings: () => invoke<void>("open_contacts_settings"),
+
+  // ── Phase 4 feature endpoints ────────────────────────────────────────────
+
+  /** Media attachments, newest first. `chatId = null` spans all conversations. */
+  listMedia: (chatId: number | null, limit: number, offset: number) =>
+    invoke<MediaItemDto[]>("list_media", { chatId, limit, offset }),
+
+  /** Shared links, newest first. `chatId = null` spans all conversations. */
+  listLinks: (chatId: number | null, limit: number, offset: number) =>
+    invoke<LinkItemDto[]>("list_links", { chatId, limit, offset }),
+
+  /** Aggregate insights for one conversation (`chatId`) or all (`null`). */
+  getInsights: (chatId: number | null) =>
+    invoke<InsightsDto>("get_insights", { chatId }),
+
+  /** Merged cross-conversation feed, newest-first, keyset-paginated on `before`. */
+  timelineFeed: (before: string | null, limit: number) =>
+    invoke<TimelineItemDto[]>("timeline_feed", { before, limit }),
 };
