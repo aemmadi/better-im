@@ -1,0 +1,31 @@
+[package]
+name = "better-im-app"
+version = "0.1.0"
+edition = "2021"
+description = "Better iMessage — native macOS reader/search app (Phase 2 Tauri shell)"
+license = "GPL-3.0-or-later"
+default-run = "better-im-app"
+
+[lib]
+# Tauri's mobile-ready convention: the app logic lives in a lib so both the
+# desktop binary and (future) mobile entrypoints can call `run()`.
+name = "better_im_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "better-im-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+better-im-core = { path = "../core" }
+better-im-index = { path = "../index" }
+# Pinned to match imessage-database's `=0.4.44` requirement (via core/index) so
+# the workspace resolves a single chrono.
+chrono = { version = "=0.4.44", features = ["serde"] }
+anyhow = "1"

@@ -1,0 +1,17 @@
+{
+  "name": "better-im",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Better iMessage — native macOS iMessage reader/search (Tauri v2). Root workspace: owns the Tauri CLI; the webview lives in ./frontend.",
+  "license": "GPL-3.0-or-later",
+  "workspaces": ["frontend"],
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "frontend:build": "npm run build --workspace frontend"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

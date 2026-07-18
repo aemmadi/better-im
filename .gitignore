@@ -8,6 +8,9 @@ node_modules/
 dist/
 .vite/
 
+# Tauri (generated)
+src-tauri/gen/
+
 # macOS
 .DS_Store
 
