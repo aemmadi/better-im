@@ -13,6 +13,8 @@ import type {
   MediaItemDto,
   MessageDto,
   SearchResultDto,
+  SemanticIndexReportDto,
+  SemanticStatusDto,
   SyncReportDto,
   TimelineItemDto,
 } from "./types";
@@ -37,6 +39,19 @@ export const api = {
 
   search: (query: string, limit: number, offset: number) =>
     invoke<SearchResultDto[]>("search", { query, limit, offset }),
+
+  /** Phase 5 hybrid (semantic + keyword) search. Same result shape as `search`;
+   * `score` is a fused RRF score. Degrades to keyword ranking until the semantic
+   * index is built. */
+  smartSearch: (query: string, limit: number, offset: number) =>
+    invoke<SearchResultDto[]>("smart_search", { query, limit, offset }),
+
+  /** Semantic-index health: whether embeddings exist and how many remain. */
+  semanticStatus: () => invoke<SemanticStatusDto>("semantic_status"),
+
+  /** Build (or top up) the semantic index. Emits `semantic-progress` events. */
+  buildSemanticIndex: () =>
+    invoke<SemanticIndexReportDto>("build_semantic_index"),
 
   getMessageContext: (id: number, before: number, after: number) =>
     invoke<MessageDto[]>("get_message_context", { id, before, after }),

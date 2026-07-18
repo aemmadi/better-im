@@ -15,6 +15,7 @@ import {
   useFdaStatus,
   useIndexStatus,
   useIndexUpdates,
+  type SearchMode,
 } from "./queries";
 import { useContactsPermission } from "./lib/contacts";
 import { formatFull } from "./lib/format";
@@ -55,6 +56,7 @@ function MainLayout() {
   const [selectedChat, setSelectedChat] = useState<ConversationDto | null>(null);
   const [focusMessageId, setFocusMessageId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<SearchMode>("keyword");
   const [centerView, setCenterView] = useState<CenterView>("chat");
 
   useIndexUpdates(selectedChat?.id ?? null);
@@ -111,7 +113,13 @@ function MainLayout() {
 
   const renderCenter = () => {
     if (searching) {
-      return <SearchResults query={searchQuery} onOpenResult={openResult} />;
+      return (
+        <SearchResults
+          query={searchQuery}
+          mode={searchMode}
+          onOpenResult={openResult}
+        />
+      );
     }
     switch (centerView) {
       case "timeline":
@@ -159,6 +167,8 @@ function MainLayout() {
           value={searchQuery}
           onChange={setSearchQuery}
           onClear={() => setSearchQuery("")}
+          mode={searchMode}
+          onModeChange={setSearchMode}
         />
       </header>
 

@@ -9,12 +9,12 @@ use std::sync::Arc;
 use better_im_core::ChatReader;
 use better_im_index::SearchOpts;
 use chrono::{DateTime, Utc};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::contacts::{self, ContactIndex, PermissionStatus};
 use crate::dto::{
-    ContactInfoDto, ConversationDto, FdaStatus, IndexStatusDto, MessageDto, SearchResultDto,
-    SyncReportDto,
+    semantic_status_dto, ContactInfoDto, ConversationDto, FdaStatus, IndexStatusDto, MessageDto,
+    SearchResultDto, SemanticIndexReportDto, SemanticProgressDto, SemanticStatusDto, SyncReportDto,
 };
 use crate::state::{ensure_started, map_sync_err, open_reader, AppState};
 
@@ -124,6 +124,63 @@ pub async fn search(
             .search(&query, SearchOpts { limit, offset })
             .map_err(|e| format!("{e:#}"))?;
         Ok(results.iter().map(SearchResultDto::from).collect())
+    })
+    .await
+}
+
+/// Phase 5 **smart** (semantic + keyword hybrid) search over the index. Returns
+/// the same [`SearchResultDto`] shape as [`search`], so the UI reuses it. The
+/// `score` here is a fused Reciprocal-Rank-Fusion score (higher is better),
+/// rather than the raw BM25 score of keyword `search`. Degrades gracefully to
+/// keyword ranking when the semantic index has not been built yet.
+#[tauri::command]
+pub async fn smart_search(
+    state: State<'_, AppState>,
+    query: String,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<SearchResultDto>, String> {
+    let indexer = state.indexer.clone();
+    run_blocking(move || {
+        let guard = indexer.lock().map_err(|e| e.to_string())?;
+        let results = guard
+            .smart_search(&query, SearchOpts { limit, offset })
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(results.iter().map(SearchResultDto::from).collect())
+    })
+    .await
+}
+
+/// Semantic-index health: whether embeddings exist yet (so the UI can offer the
+/// "build semantic index" affordance) and how many messages remain to embed.
+#[tauri::command]
+pub async fn semantic_status(state: State<'_, AppState>) -> Result<SemanticStatusDto, String> {
+    let indexer = state.indexer.clone();
+    run_blocking(move || {
+        let guard = indexer.lock().map_err(|e| e.to_string())?;
+        let status = guard.semantic_status().map_err(|e| format!("{e:#}"))?;
+        Ok(semantic_status_dto(status, guard.has_embedder()))
+    })
+    .await
+}
+
+/// Build (or top up) the semantic index: embed every message with text that
+/// lacks a vector, in batches, emitting a `semantic-progress` event
+/// ([`SemanticProgressDto`]) after each batch. Opt-in and potentially expensive.
+#[tauri::command]
+pub async fn build_semantic_index(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<SemanticIndexReportDto, String> {
+    let indexer = state.indexer.clone();
+    run_blocking(move || {
+        let guard = indexer.lock().map_err(|e| e.to_string())?;
+        let report = guard
+            .build_semantic_index(|progress| {
+                let _ = app.emit("semantic-progress", SemanticProgressDto::from(progress));
+            })
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(SemanticIndexReportDto::from(report))
     })
     .await
 }

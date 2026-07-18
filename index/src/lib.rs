@@ -20,11 +20,25 @@
 //! That is genuine integration friction, so we use `rusqlite` here to keep a
 //! single SQLite in the workspace.
 //!
-//! This costs us nothing for Phase 5: the index is an ordinary SQLite file, and
-//! libSQL opens existing SQLite databases in place. Phase 5 can point libSQL at
-//! this same `index.db`, migrate the reserved [`message_vectors`](schema) table
-//! to an `F32_BLOB` column, and build a vector index — no data migration, no
-//! re-index.
+//! ## Phase 5: semantic search on the same SQLite file
+//!
+//! Phase 5 keeps this single-`rusqlite` design. On-device embeddings (see
+//! [`embeddings`]) are stored in the [`message_vectors`](schema) table as
+//! little-endian `f32` BLOBs (+ `dim` + a `model` tag), and
+//! [`IndexDb::semantic_search`](db::IndexDb::semantic_search) ranks them by
+//! cosine similarity in Rust — an exact brute-force KNN, fused with the existing
+//! FTS/BM25 ranking via Reciprocal Rank Fusion in
+//! [`IndexDb::hybrid_search`](db::IndexDb::hybrid_search).
+//!
+//! We deliberately did **not** adopt the `sqlite-vec` extension for the shipping
+//! path, even though we verified it registers cleanly against this pinned
+//! `rusqlite`/bundled SQLite. The reasons: an exact scan over 384-dim vectors is
+//! sub-second for a personal corpus; the reserved BLOB table is the specified
+//! store, so the in-Rust scan needs no parallel `vec0` index to keep in sync; and
+//! it avoids re-introducing native C build surface and a process-global
+//! `sqlite3_auto_extension` side effect on `core`'s read-only `chat.db`
+//! connections. A `sqlite-vec`/ANN index can drop in later for scale without
+//! changing this storage.
 //!
 //! ## Typical use
 //!
@@ -43,6 +57,7 @@
 //! ```
 
 pub mod db;
+pub mod embeddings;
 pub mod indexer;
 pub mod model;
 pub mod paths;
@@ -52,10 +67,13 @@ pub mod urls;
 pub mod watcher;
 
 pub use db::IndexDb;
+pub use embeddings::{cosine_similarity, Embedder, MockEmbedder};
+#[cfg(feature = "fastembed")]
+pub use embeddings::FastEmbedEmbedder;
 pub use indexer::Indexer;
 pub use model::{
     ContactCount, DayCount, HourCount, IndexedMessage, InsightsData, LinkRow, SearchOpts,
-    SearchResult, SyncReport,
+    SearchResult, SemanticIndexReport, SemanticProgress, SemanticStatus, SyncReport,
 };
 pub use paths::default_index_path;
 pub use query::{parse_query, Filters, ParsedQuery};

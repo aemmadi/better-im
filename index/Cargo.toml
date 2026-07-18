@@ -30,6 +30,16 @@ chrono = { version = "=0.4.44", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+# Production embedder (BAAI/bge-small-en-v1.5). OPTIONAL + feature-gated: it pulls
+# the `ort`/onnxruntime native stack, which must not be required by the default
+# workspace build/test. Enable with `--features fastembed` on a machine that can
+# build onnxruntime; the ONNX model downloads on first use. See `embeddings.rs`.
+fastembed = { version = "4", optional = true }
+
+[features]
+# Compile the FastEmbed-backed `Embedder`. Off by default so `cargo build`/`test`
+# stay green (and offline/model-free) without the onnxruntime toolchain.
+fastembed = ["dep:fastembed"]
 
 [dev-dependencies]
 # Build synthetic chat.db fixtures on the fly (mirrors the Phase 0 test helper).

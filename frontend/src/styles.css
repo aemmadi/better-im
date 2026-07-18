@@ -169,6 +169,70 @@ button {
   font-size: 13px;
 }
 
+/* Keyword / Smart segmented toggle, right-aligned inside the search bar. */
+.search-mode-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--bg-hover);
+}
+
+.search-mode-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 5px;
+}
+
+.search-mode-btn.active {
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: 0 1px 2px var(--shadow);
+}
+
+/* Smart-search "build semantic index" affordance + progress. */
+.smart-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 12px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+}
+
+.smart-banner-text {
+  flex: 1 1 auto;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.smart-banner .primary-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.smart-progress {
+  flex: 1 1 auto;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.smart-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms ease;
+}
+
 /* ---- Sidebar ---- */
 .sidebar {
   flex: 0 0 280px;

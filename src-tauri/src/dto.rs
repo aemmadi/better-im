@@ -5,7 +5,9 @@
 //! the single source of truth mirrored by `frontend/src/types.ts`.
 
 use better_im_core::{Attachment, Conversation, Message};
-use better_im_index::{IndexedMessage, SearchResult, SyncReport};
+use better_im_index::{
+    IndexedMessage, SearchResult, SemanticIndexReport, SemanticProgress, SemanticStatus, SyncReport,
+};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
@@ -209,6 +211,66 @@ pub struct IndexStatusDto {
     pub count: i64,
     /// ISO-8601 timestamp of the last successful sync, when known.
     pub last_synced: Option<String>,
+}
+
+/// Semantic-index health (Phase 5): whether vectors exist yet, so the UI can
+/// decide whether to offer the "build semantic index" affordance.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticStatusDto {
+    /// Stored embedding vectors.
+    pub vector_count: i64,
+    /// Messages with embeddable text — the backfill target size.
+    pub embeddable_count: i64,
+    /// Model tag of the stored vectors, when any exist.
+    pub model: Option<String>,
+    /// Whether an embedder is available in this build (false in keyword-only builds).
+    pub available: bool,
+}
+
+/// Progress of a semantic-index backfill; the `semantic-progress` event payload.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticProgressDto {
+    pub done: usize,
+    pub total: usize,
+}
+
+impl From<SemanticProgress> for SemanticProgressDto {
+    fn from(p: SemanticProgress) -> Self {
+        Self {
+            done: p.done,
+            total: p.total,
+        }
+    }
+}
+
+/// Outcome of a `build_semantic_index` run.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticIndexReportDto {
+    pub embedded: usize,
+    pub total_vectors: i64,
+}
+
+impl From<SemanticIndexReport> for SemanticIndexReportDto {
+    fn from(r: SemanticIndexReport) -> Self {
+        Self {
+            embedded: r.embedded,
+            total_vectors: r.total_vectors,
+        }
+    }
+}
+
+/// Build a [`SemanticStatusDto`] from the index status and embedder availability.
+#[must_use]
+pub fn semantic_status_dto(status: SemanticStatus, available: bool) -> SemanticStatusDto {
+    SemanticStatusDto {
+        vector_count: status.vector_count,
+        embeddable_count: status.embeddable_count,
+        model: status.model,
+        available,
+    }
 }
 
 /// The resolved identity for a single `chat.db` handle (phone/email). Returned

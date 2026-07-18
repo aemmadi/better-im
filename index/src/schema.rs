@@ -18,11 +18,15 @@
 //!     every write to `messages` (including upserts) maintains the index.
 //! - **`sync_state`** holds a single row (`id = 1`) with the last-indexed
 //!   `message.ROWID` watermark that drives incremental sync.
-//! - **`message_vectors`** is created but intentionally unused: Phase 5 fills it
-//!   with embeddings. The index is a plain SQLite file, so Phase 5 can open it
-//!   with libSQL, migrate this table's `embedding` column to `F32_BLOB`, and add
-//!   a native vector index — in place, with no data migration. No vector index
-//!   is created yet.
+//! - **`message_vectors`** (Phase 5) stores one on-device embedding per message,
+//!   keyed by `messages.id`. The vector is a little-endian `f32` BLOB plus its
+//!   `dim` and a `model` tag (so a model swap is detectable). Search reads these
+//!   BLOBs directly and ranks by cosine similarity in Rust (see
+//!   [`db::IndexDb::semantic_search`](crate::db::IndexDb::semantic_search)); a
+//!   native ANN index (e.g. `sqlite-vec`'s `vec0`) can replace the scan later
+//!   without changing this storage. Older indexes created before Phase 5 have a
+//!   2-column `(id, embedding)` table; [`db::IndexDb::open`](crate::db::IndexDb)
+//!   migrates them by adding the `dim`/`model` columns in place.
 
 /// Full, idempotent schema. Safe to run on every open (all `IF NOT EXISTS`).
 pub const SCHEMA: &str = r#"
@@ -85,9 +89,14 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
 INSERT OR IGNORE INTO sync_state (id, last_rowid) VALUES (1, 0);
 
--- RESERVED for Phase 5 (native vector search). Created but unused; no index yet.
+-- Phase 5: one on-device embedding per message (keyed by messages.id).
+-- `embedding` is a little-endian f32 BLOB of length `dim`; `model` tags the
+-- producing embedder. Fresh indexes get all columns here; pre-Phase-5 indexes
+-- (2-column) are upgraded by the ALTER migration in `IndexDb::open`.
 CREATE TABLE IF NOT EXISTS message_vectors (
     id        INTEGER PRIMARY KEY,
-    embedding BLOB
+    embedding BLOB,
+    dim       INTEGER,
+    model     TEXT
 );
 "#;

@@ -8,9 +8,12 @@ import {
   keepPreviousData,
 } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
-import type { SyncReportDto } from "./types";
+import type { SemanticProgressDto, SyncReportDto } from "./types";
+
+/** Search ranking mode: keyword (FTS/BM25) or smart (semantic + keyword hybrid). */
+export type SearchMode = "keyword" | "smart";
 
 /** How many messages to load per thread page. */
 export const THREAD_PAGE = 150;
@@ -56,15 +59,70 @@ export function useMessageContext(messageId: number | null) {
   });
 }
 
-export function useSearch(query: string) {
+export function useSearch(query: string, mode: SearchMode = "keyword") {
   const trimmed = query.trim();
   return useQuery({
-    queryKey: ["search", trimmed],
-    queryFn: () => api.search(trimmed, 60, 0),
+    queryKey: ["search", mode, trimmed],
+    queryFn: () =>
+      mode === "smart"
+        ? api.smartSearch(trimmed, 60, 0)
+        : api.search(trimmed, 60, 0),
     enabled: trimmed.length > 0,
     placeholderData: keepPreviousData,
     retry: false,
   });
+}
+
+/** Semantic-index health, driving the "build semantic index" affordance. */
+export function useSemanticStatus(enabled: boolean) {
+  return useQuery({
+    queryKey: ["semanticStatus"],
+    queryFn: api.semanticStatus,
+    enabled,
+    retry: false,
+  });
+}
+
+/**
+ * Drive a semantic-index build: exposes `build()`, whether it is `building`, and
+ * live `progress` from the `semantic-progress` event. On completion it refreshes
+ * the semantic status and any active search so Smart results pick up the new
+ * vectors immediately.
+ */
+export function useBuildSemanticIndex() {
+  const qc = useQueryClient();
+  const [building, setBuilding] = useState(false);
+  const [progress, setProgress] = useState<SemanticProgressDto | null>(null);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen<SemanticProgressDto>("semantic-progress", (e) => {
+      setProgress(e.payload);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const build = useCallback(async () => {
+    setBuilding(true);
+    setProgress({ done: 0, total: 0 });
+    try {
+      await api.buildSemanticIndex();
+    } finally {
+      setBuilding(false);
+      setProgress(null);
+      qc.invalidateQueries({ queryKey: ["semanticStatus"] });
+      qc.invalidateQueries({ queryKey: ["search"] });
+    }
+  }, [qc]);
+
+  return { build, building, progress };
 }
 
 export function useIndexStatus(enabled: boolean) {
@@ -146,6 +204,7 @@ export function useIndexUpdates(openChatId: number | null) {
     listen<SyncReportDto>("index-updated", () => {
       qc.invalidateQueries({ queryKey: ["conversations"] });
       qc.invalidateQueries({ queryKey: ["indexStatus"] });
+      qc.invalidateQueries({ queryKey: ["semanticStatus"] });
       qc.invalidateQueries({ queryKey: ["media"] });
       qc.invalidateQueries({ queryKey: ["links"] });
       qc.invalidateQueries({ queryKey: ["insights"] });

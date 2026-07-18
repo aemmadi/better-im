@@ -67,6 +67,28 @@ export interface IndexStatusDto {
   lastSynced: string | null;
 }
 
+/** Phase 5 semantic-index health. `vectorCount === 0` means no embeddings yet
+ * (the UI offers the "build semantic index" affordance). */
+export interface SemanticStatusDto {
+  vectorCount: number;
+  embeddableCount: number;
+  model: string | null;
+  /** Whether this build has an embedder at all (keyword-only builds set false). */
+  available: boolean;
+}
+
+/** Payload of the `semantic-progress` event emitted during a backfill. */
+export interface SemanticProgressDto {
+  done: number;
+  total: number;
+}
+
+/** Outcome of a `build_semantic_index` run. */
+export interface SemanticIndexReportDto {
+  embedded: number;
+  totalVectors: number;
+}
+
 /** Resolved identity for one `chat.db` handle. Keyed by the requested identifier
  * in the `resolve_contacts` response. Unmatched handles still carry a formatted
  * `displayName` (with `matched: false`). */

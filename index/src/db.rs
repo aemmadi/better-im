@@ -8,12 +8,22 @@ use chrono::Utc;
 use rusqlite::types::Value;
 use rusqlite::{params_from_iter, Connection, Row};
 
+use crate::embeddings::{cosine_similarity, decode_vector, encode_vector};
 use crate::model::{
     ContactCount, DayCount, HourCount, IndexedMessage, InsightsData, LinkRow, SearchOpts,
-    SearchResult,
+    SearchResult, SemanticStatus,
 };
 use crate::query::{Filters, ParsedQuery};
 use crate::schema::SCHEMA;
+
+/// Reciprocal Rank Fusion constant. The standard value from the RRF paper;
+/// larger `k` flattens the contribution of rank differences.
+const RRF_K: f64 = 60.0;
+
+/// Per-arm candidate pool size for hybrid fusion. Each arm (FTS + vector)
+/// contributes up to this many ranked hits before fusion; large enough that a
+/// message ranked well by one arm is not dropped before it can be fused.
+const RRF_POOL: usize = 200;
 
 /// The message columns selected (in order) for row decoding. Indices 0..=16.
 const MESSAGE_SELECT: &str = "\
@@ -50,6 +60,7 @@ impl IndexDb {
         let conn = Connection::open(path.as_ref())
             .with_context(|| format!("opening index db at {}", path.as_ref().display()))?;
         conn.execute_batch(SCHEMA).context("applying index schema")?;
+        migrate_message_vectors(&conn).context("migrating message_vectors table")?;
         Ok(Self { conn })
     }
 
@@ -199,6 +210,252 @@ impl IndexDb {
         for r in rows {
             out.push(r?);
         }
+        Ok(out)
+    }
+
+    // ── Phase 5: vector storage + semantic / hybrid search ──────────────────
+
+    /// Upsert a batch of `(message_id, embedding)` vectors, tagging each with
+    /// `model`. The embedding is stored as a little-endian `f32` BLOB plus its
+    /// dimensionality. Returns the number of rows written.
+    ///
+    /// # Errors
+    /// Returns an error if any statement fails; the transaction is rolled back.
+    pub fn upsert_vectors(
+        &self,
+        vectors: &[(i64, Vec<f32>)],
+        model: &str,
+    ) -> anyhow::Result<usize> {
+        if vectors.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO message_vectors (id, embedding, dim, model) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                   embedding = excluded.embedding, dim = excluded.dim, model = excluded.model",
+            )?;
+            for (id, vec) in vectors {
+                stmt.execute(rusqlite::params![
+                    id,
+                    encode_vector(vec),
+                    vec.len() as i64,
+                    model
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(vectors.len())
+    }
+
+    /// Number of stored embedding vectors.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn vector_count(&self) -> anyhow::Result<i64> {
+        let n: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM message_vectors", [], |row| row.get(0))?;
+        Ok(n)
+    }
+
+    /// Count of messages with embeddable text that still lack a vector (the
+    /// remaining backfill work). Cheaper than fetching the rows just to count.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn missing_vector_count(&self) -> anyhow::Result<i64> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM messages m \
+             LEFT JOIN message_vectors v ON v.id = m.id \
+             WHERE v.id IS NULL AND m.text IS NOT NULL AND m.text <> ''",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n)
+    }
+
+    /// Semantic-index health: stored vectors, embeddable messages, and the model
+    /// tag of the stored vectors (if any).
+    ///
+    /// # Errors
+    /// Returns an error if any query fails.
+    pub fn semantic_status(&self) -> anyhow::Result<SemanticStatus> {
+        let vector_count = self.vector_count()?;
+        let embeddable_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL AND text <> ''",
+            [],
+            |row| row.get(0),
+        )?;
+        let model: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT model FROM message_vectors WHERE model IS NOT NULL LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(SemanticStatus {
+            vector_count,
+            embeddable_count,
+            model,
+        })
+    }
+
+    /// Fetch up to `limit` messages that have embeddable text but no stored
+    /// vector yet, as `(id, text)` pairs (oldest source ROWID first). Drives the
+    /// backfill: embed these, upsert, repeat until empty.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn messages_missing_vectors(&self, limit: usize) -> anyhow::Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.id, m.text FROM messages m \
+             LEFT JOIN message_vectors v ON v.id = m.id \
+             WHERE v.id IS NULL AND m.text IS NOT NULL AND m.text <> '' \
+             ORDER BY m.id ASC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Rank stored vectors by cosine similarity to `query_vec`, applying the same
+    /// operator [`Filters`] as keyword search, and return the top `limit` as
+    /// `(message_id, similarity)` (best first).
+    ///
+    /// This is an exact brute-force KNN over the stored BLOBs (see the crate docs
+    /// for the sqlite-vec-vs-in-Rust rationale). Only vectors whose dimensionality
+    /// matches the query are considered.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn semantic_search(
+        &self,
+        query_vec: &[f32],
+        filters: &Filters,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, f32)>> {
+        let (filter_sql, filter_params) = build_filter_clauses(filters);
+        let sql = format!(
+            "SELECT v.id, v.embedding FROM message_vectors v \
+             JOIN messages m ON m.id = v.id \
+             WHERE v.embedding IS NOT NULL {filters}",
+            filters = filter_sql,
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(filter_params), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+
+        let mut scored: Vec<(i64, f32)> = Vec::new();
+        for r in rows {
+            let (id, blob) = r?;
+            let vec = decode_vector(&blob);
+            if vec.len() != query_vec.len() {
+                continue; // dimensionality mismatch (e.g. a different model)
+            }
+            scored.push((id, cosine_similarity(query_vec, &vec)));
+        }
+        // Best (highest) similarity first; stable tiebreak on id.
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        scored.truncate(limit);
+        Ok(scored)
+    }
+
+    /// Hybrid search: fuse keyword (FTS/BM25) and semantic (vector) rankings with
+    /// Reciprocal Rank Fusion, returning results in the shared [`SearchResult`]
+    /// shape (so the UI reuses it). Operator filters are applied to **both** arms.
+    ///
+    /// `query_vec` is the embedding of the query's free text. When there is no
+    /// free text to match (filters-only query) or no query vector, this degrades
+    /// to plain keyword/filter search. When the semantic index is empty, the
+    /// vector arm contributes nothing and results equal FTS ranking.
+    ///
+    /// The returned [`SearchResult::score`] is the fused RRF score (higher is
+    /// better), unlike the raw BM25 score of [`search`](Self::search).
+    ///
+    /// # Errors
+    /// Returns an error if either arm's query fails.
+    pub fn hybrid_search(
+        &self,
+        query_vec: Option<&[f32]>,
+        query: &ParsedQuery,
+        opts: SearchOpts,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        // Without free text (or a query vector) there is nothing to embed against;
+        // fall back to the plain keyword/filter path.
+        let (Some(vec), true) = (query_vec, query.fts.is_some()) else {
+            return self.search(query, opts);
+        };
+
+        let pool = opts.offset.saturating_add(opts.limit).max(RRF_POOL);
+        let fts_hits = self.search(
+            query,
+            SearchOpts {
+                limit: pool,
+                offset: 0,
+            },
+        )?;
+        let vec_hits = self.semantic_search(vec, &query.filters, pool)?;
+
+        // Fuse: RRF score per message id, plus a representative row per id. The
+        // FTS hit is preferred as the representative (it carries a highlighted
+        // snippet); a vector-only hit falls back to a plain text snippet.
+        let mut fused: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+        let mut rep: std::collections::HashMap<i64, SearchResult> = std::collections::HashMap::new();
+
+        for (rank, hit) in fts_hits.iter().enumerate() {
+            let id = hit.message.id;
+            *fused.entry(id).or_insert(0.0) += rrf_contribution(rank);
+            rep.entry(id).or_insert_with(|| hit.clone());
+        }
+        for (rank, (id, _sim)) in vec_hits.iter().enumerate() {
+            *fused.entry(*id).or_insert(0.0) += rrf_contribution(rank);
+            if !rep.contains_key(id) {
+                if let Some(msg) = self.get_message(*id)? {
+                    let snippet = plain_snippet(msg.text.as_deref());
+                    rep.insert(
+                        *id,
+                        SearchResult {
+                            message: msg,
+                            snippet,
+                            score: 0.0,
+                        },
+                    );
+                }
+            }
+        }
+
+        // Order by fused score (desc), stable tiebreak on id (asc).
+        let mut ranked: Vec<(i64, f64)> = fused.into_iter().collect();
+        ranked.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+
+        let out = ranked
+            .into_iter()
+            .skip(opts.offset)
+            .take(opts.limit)
+            .filter_map(|(id, score)| {
+                rep.remove(&id).map(|mut r| {
+                    r.score = score;
+                    r
+                })
+            })
+            .collect();
         Ok(out)
     }
 
@@ -575,4 +832,39 @@ fn opt_i64(o: Option<i64>) -> Value {
 /// `%value%` (lowercased) for a case-insensitive `LIKE` contains-match.
 fn contains(value: &str) -> String {
     format!("%{}%", value.to_lowercase())
+}
+
+/// One arm's Reciprocal Rank Fusion contribution for a hit at 0-based `rank`:
+/// `1 / (RRF_K + rank + 1)`.
+fn rrf_contribution(rank: usize) -> f64 {
+    1.0 / (RRF_K + (rank as f64) + 1.0)
+}
+
+/// A plain, unhighlighted snippet (first ~160 chars) for a vector-only hit that
+/// has no FTS `snippet()` output. Mirrors the filter-only search path.
+fn plain_snippet(text: Option<&str>) -> String {
+    let text = text.unwrap_or("");
+    let truncated: String = text.chars().take(160).collect();
+    truncated
+}
+
+/// Bring a `message_vectors` table created before Phase 5 up to the current
+/// shape by adding the `dim` / `model` columns when missing. Idempotent: fresh
+/// indexes already have both columns (from `SCHEMA`), so nothing is altered.
+fn migrate_message_vectors(conn: &Connection) -> anyhow::Result<()> {
+    let mut existing: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(message_vectors)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for r in rows {
+            existing.push(r?);
+        }
+    }
+    if !existing.iter().any(|c| c == "dim") {
+        conn.execute("ALTER TABLE message_vectors ADD COLUMN dim INTEGER", [])?;
+    }
+    if !existing.iter().any(|c| c == "model") {
+        conn.execute("ALTER TABLE message_vectors ADD COLUMN model TEXT", [])?;
+    }
+    Ok(())
 }

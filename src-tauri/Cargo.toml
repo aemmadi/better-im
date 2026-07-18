@@ -16,6 +16,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "better-im-app"
 path = "src/main.rs"
 
+[features]
+# Forward to the index crate's production embedder (BAAI/bge-small-en-v1.5 via
+# onnxruntime). Off by default so the app builds without the native ONNX stack;
+# without it the app uses the deterministic MockEmbedder for Smart search.
+fastembed = ["better-im-index/fastembed"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

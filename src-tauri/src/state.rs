@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use better_im_core::ChatReader;
-use better_im_index::{watch, IndexWatcher, Indexer, DEFAULT_DEBOUNCE};
+use better_im_index::{watch, Embedder, IndexWatcher, Indexer, DEFAULT_DEBOUNCE};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::contacts::ContactIndex;
@@ -37,13 +37,19 @@ pub struct AppState {
     /// Per-handle resolution cache, keyed by the raw `chat.db` identifier. Only
     /// populated from an authoritative (authorized) index.
     pub resolved_contacts: Arc<Mutex<HashMap<String, ContactInfoDto>>>,
+    /// The on-device embedder powering Phase 5 semantic search. Shared with both
+    /// the command-side indexer and the watcher-side indexer so vectors stay
+    /// current. See [`make_embedder`].
+    pub embedder: Arc<dyn Embedder>,
 }
 
 impl AppState {
     /// Build state, opening the (always-local) index database. Does **not** touch
     /// `chat.db`, so this succeeds even without Full Disk Access.
     pub fn new(chat_db_path: PathBuf, index_path: PathBuf) -> anyhow::Result<Self> {
-        let indexer = Indexer::open(&chat_db_path, &index_path)?;
+        let embedder = make_embedder();
+        let indexer =
+            Indexer::open_with_embedder(&chat_db_path, &index_path, Some(embedder.clone()))?;
         Ok(Self {
             chat_db_path,
             index_path,
@@ -52,8 +58,29 @@ impl AppState {
             sync_started: AtomicBool::new(false),
             contact_index: Arc::new(Mutex::new(None)),
             resolved_contacts: Arc::new(Mutex::new(HashMap::new())),
+            embedder,
         })
     }
+}
+
+/// Construct the semantic-search embedder for this build.
+///
+/// With the `fastembed` feature, this is the production `BAAI/bge-small-en-v1.5`
+/// model (its ONNX weights download on first use). Without it — the default build
+/// used by CI and this sandbox — it is the deterministic [`MockEmbedder`], so the
+/// full Smart-search flow still works end-to-end (with toy vectors) and the
+/// workspace never needs the onnxruntime toolchain. The model tag is stored with
+/// each vector, so switching builds is detectable.
+#[cfg(feature = "fastembed")]
+fn make_embedder() -> Arc<dyn Embedder> {
+    Arc::new(better_im_index::FastEmbedEmbedder::new())
+}
+
+#[cfg(not(feature = "fastembed"))]
+fn make_embedder() -> Arc<dyn Embedder> {
+    // Match bge-small's dimensionality so switching to the real model keeps the
+    // stored `dim` consistent for freshly-built indexes.
+    Arc::new(better_im_index::MockEmbedder::new(384))
 }
 
 /// Default source `chat.db`: `~/Library/Messages/chat.db`.
@@ -129,13 +156,14 @@ where
 /// Emits `index-updated` with a [`SyncReportDto`] after the initial sync and on
 /// every subsequent watcher-driven sync.
 async fn startup_sync(app: AppHandle) {
-    let (chat_db_path, index_path, indexer, watcher_slot) = {
+    let (chat_db_path, index_path, indexer, watcher_slot, embedder) = {
         let s = app.state::<AppState>();
         (
             s.chat_db_path.clone(),
             s.index_path.clone(),
             s.indexer.clone(),
             s.watcher.clone(),
+            s.embedder.clone(),
         )
     };
 
@@ -175,7 +203,8 @@ async fn startup_sync(app: AppHandle) {
     let ip = index_path.clone();
     let emit_handle = app.clone();
     let watcher = run_blocking(move || {
-        let watcher_indexer = Indexer::open(&src, &ip).map_err(map_sync_err)?;
+        let watcher_indexer =
+            Indexer::open_with_embedder(&src, &ip, Some(embedder)).map_err(map_sync_err)?;
         watch(watcher_indexer, &src, DEFAULT_DEBOUNCE, move |res| {
             if let Ok(report) = res {
                 let _ = emit_handle.emit("index-updated", SyncReportDto::from(report));

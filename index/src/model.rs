@@ -154,3 +154,34 @@ pub struct SyncReport {
     /// The new watermark (highest indexed `message.ROWID`).
     pub watermark: i64,
 }
+
+/// Progress of a semantic-index backfill, emitted per batch so a UI can render a
+/// progress bar. `done <= total`; `done == total` marks completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticProgress {
+    /// Messages embedded so far this run.
+    pub done: usize,
+    /// Total messages that need embedding (missing a vector at the start).
+    pub total: usize,
+}
+
+/// Outcome of a semantic-index build/backfill run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticIndexReport {
+    /// Messages embedded (new vectors written) this run.
+    pub embedded: usize,
+    /// Total stored vectors after the run.
+    pub total_vectors: i64,
+}
+
+/// Health of the semantic (vector) index, for the UI to decide whether to offer
+/// the "build semantic index" affordance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticStatus {
+    /// Stored embedding vectors.
+    pub vector_count: i64,
+    /// Messages with embeddable (non-empty) text — the backfill target size.
+    pub embeddable_count: i64,
+    /// Model tag of the stored vectors, when any exist.
+    pub model: Option<String>,
+}
