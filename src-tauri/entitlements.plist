@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Hardened-runtime entitlements for the notarizable Developer ID build.
+	  Referenced from `tauri.conf.json` (bundle.macOS.entitlements) and applied by
+	  `codesign` during `tauri build`.
+
+	  The app is intentionally NOT sandboxed: it needs to read
+	  ~/Library/Messages/chat.db, which the App Sandbox forbids. Full Disk Access
+	  is a user-granted TCC permission (System Settings › Privacy & Security ›
+	  Full Disk Access), NOT an entitlement — so there is nothing to declare here
+	  for it, and Mac App Store distribution (which mandates the sandbox) is
+	  impossible for this app.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+
+	<!--
+	  Needed only by the release build produced with `--features fastembed`:
+	  the FastEmbed / ONNX Runtime (`ort`) stack loads the ONNX Runtime native
+	  library, which is not signed by our Team ID. Under the hardened runtime,
+	  library validation would refuse to load a third-party dylib with a different
+	  signing identity. Disabling library validation permits it.
+
+	  Harmless for the default (keyword-only) build, which never loads that
+	  library. If a future onnxruntime release additionally uses JIT-compiled
+	  executable memory, add com.apple.security.cs.allow-unsigned-executable-memory
+	  here as well.
+	-->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

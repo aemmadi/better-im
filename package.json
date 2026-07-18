@@ -9,6 +9,7 @@
     "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
+    "build:release": "tauri build --features fastembed",
     "frontend:build": "npm run build --workspace frontend"
   },
   "devDependencies": {

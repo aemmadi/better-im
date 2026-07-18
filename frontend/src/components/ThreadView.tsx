@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { MessageBubble } from "./MessageBubble";
+import { ThreadComposer } from "./ThreadComposer";
 import { useMessageContext, useThread, THREAD_PAGE } from "../queries";
 import { api } from "../api";
 import { useContactMap } from "../lib/contacts";
@@ -167,6 +168,8 @@ export function ThreadView({ chatId, title, focusMessageId }: Props) {
           })}
         </div>
       </div>
+      {/* Read-only affordance + send-layer seam. Gates on `capabilities()`. */}
+      <ThreadComposer />
     </div>
   );
 }

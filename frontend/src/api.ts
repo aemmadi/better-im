@@ -28,6 +28,11 @@ export function isFdaError(err: unknown): boolean {
 }
 
 export const api = {
+  /** Action capabilities the backend advertises (stable string tags, e.g.
+   * `"SendText"`). Empty today: the shipping build is a read-only provider. The
+   * thread composer gates on this — see `ThreadComposer`. */
+  capabilities: () => invoke<string[]>("capabilities"),
+
   fdaStatus: () => invoke<FdaStatus>("fda_status"),
 
   openFdaSettings: () => invoke<void>("open_fda_settings"),

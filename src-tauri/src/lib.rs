@@ -31,6 +31,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::capabilities,
             commands::fda_status,
             commands::open_fda_settings,
             commands::list_conversations,

@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use better_im_core::ChatReader;
+use better_im_core::{ChatReader, MessageActionProvider, ReadOnlyProvider};
 use better_im_index::SearchOpts;
 use chrono::{DateTime, Utc};
 use tauri::{AppHandle, Emitter, State};
@@ -35,6 +35,38 @@ fn parse_iso(s: &str) -> Result<DateTime<Utc>, String> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
         .map_err(|e| format!("invalid ISO-8601 timestamp {s:?}: {e}"))
+}
+
+/// The action capabilities the current backend advertises, as stable string
+/// tags (see [`Capability::as_str`](better_im_core::Capability::as_str)).
+///
+/// # ⇽ The send-layer drop-in point
+///
+/// Today the app is backed by [`ReadOnlyProvider`], whose capability set is
+/// **empty**, so this returns `[]`. The frontend reads this list once and, seeing
+/// no `"SendText"`, renders a polished but disabled, read-only composer.
+///
+/// To add sending later, this is the *only* backend line that changes: swap
+/// `ReadOnlyProvider` below for a send-capable provider — e.g. an `IMCoreProvider`
+/// (private `IMCore` framework) or an `AppleScriptProvider` (Messages.app
+/// Automation) — that returns `Capability::SendText` (and friends). Because the
+/// UI gates purely on the returned tags, the composer enables itself with no
+/// other frontend change. (A real send path also requires the user to opt into a
+/// lower-security tier — disabling SIP / granting Automation — which is why it is
+/// a deliberately separate, future opt-in rather than the default.)
+#[tauri::command]
+pub fn capabilities() -> Vec<String> {
+    // ── SEND-LAYER SEAM ──────────────────────────────────────────────────────
+    // Replace `ReadOnlyProvider` with a future send-capable provider to light up
+    // the composer. Nothing else here (or in the UI) needs to change.
+    let provider = ReadOnlyProvider;
+    let mut caps: Vec<String> = provider
+        .capabilities()
+        .iter()
+        .map(|c| c.as_str().to_string())
+        .collect();
+    caps.sort(); // stable order for the UI / any snapshot testing
+    caps
 }
 
 /// Probe Full Disk Access with a lightweight `chat.db` read. Also (re)triggers

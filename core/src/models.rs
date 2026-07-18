@@ -136,6 +136,27 @@ pub enum Capability {
     MarkRead,
 }
 
+impl Capability {
+    /// Stable string tag for this capability.
+    ///
+    /// This is the *contract* the UI gates on: the Tauri `capabilities` command
+    /// serializes a provider's set into these tags, and the frontend composer
+    /// enables sending only when it sees `"SendText"`. The tags intentionally
+    /// match the serde variant names, so keep them in lockstep and stable.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Capability::ReadMessages => "ReadMessages",
+            Capability::SendText => "SendText",
+            Capability::SendAttachment => "SendAttachment",
+            Capability::React => "React",
+            Capability::Edit => "Edit",
+            Capability::Unsend => "Unsend",
+            Capability::MarkRead => "MarkRead",
+        }
+    }
+}
+
 /// The extensibility seam for a future send layer.
 ///
 /// A provider advertises the [`Capability`] set it supports. Phase 0 ships only
@@ -154,6 +175,22 @@ pub trait MessageActionProvider {
 ///
 /// Returns an empty capability set: it exposes no *actions*. The read path is
 /// provided directly by [`ChatReader`](crate::reader::ChatReader).
+///
+/// # ⇽ Send-layer drop-in point
+///
+/// This is the exact seam where a future *send* layer plugs in. To make the app
+/// send, add a sibling provider — e.g. `IMCoreProvider` (linking Apple's private
+/// `IMCore` framework) or `AppleScriptProvider` (driving Messages.app via
+/// Automation) — that implements [`MessageActionProvider`] and returns the
+/// actions it supports (starting with [`Capability::SendText`]). The Tauri
+/// `capabilities` command exposes that set to the UI, whose composer is already
+/// gated on it, so lighting up sending is purely additive.
+///
+/// Enabling send is deliberately *not* a drop-in for the default distribution:
+/// programmatic sending on modern macOS requires a lower-security posture
+/// (disabling System Integrity Protection to link `IMCore`, or granting
+/// Automation control of Messages.app). That is a separate, user-opted-in tier —
+/// which is why the shipping build stays [`ReadOnlyProvider`].
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ReadOnlyProvider;
 
@@ -173,6 +210,15 @@ mod tests {
         assert!(provider.capabilities().is_empty());
         assert!(!provider.supports(Capability::SendText));
         assert!(!provider.supports(Capability::ReadMessages));
+    }
+
+    #[test]
+    fn capability_tags_are_stable() {
+        // These string tags are the IPC contract the UI gates on; if this test
+        // needs updating, the frontend composer's gate must change in lockstep.
+        assert_eq!(Capability::SendText.as_str(), "SendText");
+        assert_eq!(Capability::ReadMessages.as_str(), "ReadMessages");
+        assert_eq!(Capability::MarkRead.as_str(), "MarkRead");
     }
 
     #[test]

@@ -23,6 +23,22 @@ export const MEDIA_PAGE = 60;
 export const LINKS_PAGE = 50;
 export const TIMELINE_PAGE = 80;
 
+/**
+ * The backend's advertised action capabilities (stable string tags). Empty today
+ * — the shipping build is a read-only provider — so the thread composer renders
+ * disabled. Read once and cached for the session; when a send-capable provider is
+ * dropped in on the backend, `"SendText"` appears here and the composer enables
+ * itself with no other frontend change.
+ */
+export function useCapabilities() {
+  return useQuery({
+    queryKey: ["capabilities"],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
 export function useFdaStatus() {
   return useQuery({
     queryKey: ["fda"],

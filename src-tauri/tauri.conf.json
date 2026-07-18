@@ -34,15 +34,27 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "category": "SocialNetworking",
+    "targets": ["app", "dmg"],
+    "category": "public.app-category.social-networking",
+    "copyright": "Copyright © 2026 Anirudh Emmadi. Licensed under the GNU GPL-3.0-or-later.",
     "shortDescription": "Read and search your local iMessage history",
-    "longDescription": "Better iMessage is a native macOS reader and full-text search app for the local Messages database. All processing happens on-device; nothing leaves the machine.",
+    "longDescription": "Better iMessage is a native macOS reader and search app for the local Messages database. It reads your conversations, ranks keyword and semantic (on-device) search, and surfaces galleries, shared links, insights, and a unified timeline — all on-device. Nothing ever leaves your Mac.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.png"
-    ]
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist",
+      "dmg": {
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 180 },
+        "applicationFolderPosition": { "x": 480, "y": 180 }
+      }
+    }
   }
 }
