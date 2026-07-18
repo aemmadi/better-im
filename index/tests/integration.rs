@@ -204,3 +204,98 @@ fn default_index_path_is_under_app_support() {
     let path: PathBuf = better_im_index::default_index_path().unwrap();
     assert!(path.ends_with("better-im/index.db"));
 }
+
+// ── Phase 4 feature queries ─────────────────────────────────────────────────
+
+#[test]
+fn list_links_extracts_urls_newest_first() {
+    let (indexer, _dir) = indexed();
+    // Only message 4 (from me) carries a link.
+    let links = indexer.db().list_links(None, 50, 0).unwrap();
+    assert_eq!(links.len(), 1);
+    let link = &links[0];
+    assert_eq!(link.message_id, 4);
+    assert_eq!(link.url, "https://example.com/cool");
+    assert!(link.is_from_me);
+    assert_eq!(link.chat_id, Some(1));
+    assert!(link.timestamp.is_some());
+}
+
+#[test]
+fn list_links_scopes_to_chat_and_paginates() {
+    let (indexer, _dir) = indexed();
+    // The link lives in chat 1; the Work group (chat 3) has none.
+    assert_eq!(indexer.db().list_links(Some(1), 50, 0).unwrap().len(), 1);
+    assert_eq!(indexer.db().list_links(Some(3), 50, 0).unwrap().len(), 0);
+
+    // URL-level pagination: skipping the only link yields nothing.
+    assert_eq!(indexer.db().list_links(None, 50, 1).unwrap().len(), 0);
+}
+
+#[test]
+fn insights_aggregate_global() {
+    let (indexer, _dir) = indexed();
+    let ins = indexer.db().insights(None).unwrap();
+
+    assert_eq!(ins.total_messages, 8);
+    assert_eq!(ins.sent_count, 2, "messages 2 and 4 are from me");
+    assert_eq!(ins.received_count, 6);
+    assert_eq!(ins.sent_count + ins.received_count, ins.total_messages);
+
+    // First/last are min/max epoch millis — timezone-independent.
+    let first = ins.first_message.expect("has a first message");
+    let last = ins.last_message.expect("has a last message");
+    assert!(first < last);
+
+    // Histograms partition the corpus; the local-time bucketing is TZ-dependent,
+    // so assert only the invariants (sums + hour range).
+    let day_sum: i64 = ins.by_day.iter().map(|d| d.count).sum();
+    let hour_sum: i64 = ins.by_hour.iter().map(|h| h.count).sum();
+    assert_eq!(day_sum, 8);
+    assert_eq!(hour_sum, 8);
+    assert!(ins.by_hour.iter().all(|h| (0..=23).contains(&h.hour)));
+
+    // Top inbound correspondents: alice (msgs 1,3,7,8) outranks bob (msgs 5,6).
+    assert_eq!(ins.top_contacts.len(), 2);
+    assert_eq!(ins.top_contacts[0].handle, "alice@example.com");
+    assert_eq!(ins.top_contacts[0].count, 4);
+    assert_eq!(ins.top_contacts[1].handle, "bob@example.com");
+    assert_eq!(ins.top_contacts[1].count, 2);
+}
+
+#[test]
+fn insights_scoped_to_one_chat() {
+    let (indexer, _dir) = indexed();
+    // Chat 1 holds messages 1, 2, 3, 4, 7 (2 sent, 3 received).
+    let ins = indexer.db().insights(Some(1)).unwrap();
+    assert_eq!(ins.total_messages, 5);
+    assert_eq!(ins.sent_count, 2);
+    assert_eq!(ins.received_count, 3);
+    // Only alice is an inbound correspondent in this chat.
+    assert_eq!(ins.top_contacts.len(), 1);
+    assert_eq!(ins.top_contacts[0].handle, "alice@example.com");
+    assert_eq!(ins.top_contacts[0].count, 3);
+}
+
+#[test]
+fn timeline_feed_keyset_paginates_newest_first() {
+    let (indexer, _dir) = indexed();
+
+    let page1 = indexer.db().timeline(None, 3).unwrap();
+    assert_eq!(page1.len(), 3);
+    // Message 7 (Sept 10) is the most recent overall.
+    assert_eq!(page1[0].id, 7);
+    // Strictly non-increasing timestamps within a page.
+    for w in page1.windows(2) {
+        assert!(w[0].timestamp_millis >= w[1].timestamp_millis);
+    }
+
+    // Keyset: the next page is everything strictly before the last item's ts.
+    let cursor = page1.last().unwrap().timestamp_millis;
+    let page2 = indexer.db().timeline(Some(cursor), 3).unwrap();
+    assert!(page2.iter().all(|m| m.timestamp_millis < cursor));
+
+    // Pages do not overlap.
+    let ids1: Vec<i64> = page1.iter().map(|m| m.id).collect();
+    assert!(page2.iter().all(|m| !ids1.contains(&m.id)));
+}

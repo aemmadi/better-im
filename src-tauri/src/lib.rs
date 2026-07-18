@@ -46,6 +46,7 @@ pub fn run() {
             features::links::list_links,
             features::insights::get_insights,
             features::timeline::timeline_feed,
+            features::open_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Better iMessage");

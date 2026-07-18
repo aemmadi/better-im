@@ -48,11 +48,16 @@ pub mod model;
 pub mod paths;
 pub mod query;
 pub mod schema;
+pub mod urls;
 pub mod watcher;
 
 pub use db::IndexDb;
 pub use indexer::Indexer;
-pub use model::{IndexedMessage, SearchOpts, SearchResult, SyncReport};
+pub use model::{
+    ContactCount, DayCount, HourCount, IndexedMessage, InsightsData, LinkRow, SearchOpts,
+    SearchResult, SyncReport,
+};
 pub use paths::default_index_path;
 pub use query::{parse_query, Filters, ParsedQuery};
+pub use urls::{extract_urls, has_url};
 pub use watcher::{watch, watch_channel, IndexWatcher, DEFAULT_DEBOUNCE};

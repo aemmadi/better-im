@@ -1,6 +1,10 @@
 //! Insights & stats endpoint.
 
+use better_im_index::InsightsData;
 use serde::Serialize;
+use tauri::State;
+
+use crate::state::AppState;
 
 /// Messages sent on a given calendar day (`YYYY-MM-DD`).
 #[derive(Debug, Clone, Serialize)]
@@ -41,22 +45,57 @@ pub struct InsightsDto {
     pub top_contacts: Vec<ContactCountDto>,
 }
 
-/// Compute conversation / global insights.
-///
-/// TODO(phase4-insights): implement with aggregate SQL over the index
-/// (`GROUP BY` day/hour/handle, counts, min/max timestamp). Reuse the Phase 3
-/// contact index server-side if convenient, else let the frontend resolve names.
+impl From<InsightsData> for InsightsDto {
+    fn from(d: InsightsData) -> Self {
+        Self {
+            total_messages: d.total_messages,
+            sent_count: d.sent_count,
+            received_count: d.received_count,
+            first_message: d.first_message.map(|t| t.to_rfc3339()),
+            last_message: d.last_message.map(|t| t.to_rfc3339()),
+            by_day: d
+                .by_day
+                .into_iter()
+                .map(|c| DayCountDto {
+                    date: c.date,
+                    count: c.count,
+                })
+                .collect(),
+            by_hour: d
+                .by_hour
+                .into_iter()
+                .map(|c| HourCountDto {
+                    hour: c.hour,
+                    count: c.count,
+                })
+                .collect(),
+            top_contacts: d
+                .top_contacts
+                .into_iter()
+                .map(|c| ContactCountDto {
+                    handle: c.handle,
+                    count: c.count,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Compute conversation / global insights by aggregating over the index. No Full
+/// Disk Access needed — everything comes from the local index.
 #[tauri::command]
-pub async fn get_insights(chat_id: Option<i64>) -> Result<InsightsDto, String> {
-    let _ = chat_id;
-    Ok(InsightsDto {
-        total_messages: 0,
-        sent_count: 0,
-        received_count: 0,
-        first_message: None,
-        last_message: None,
-        by_day: Vec::new(),
-        by_hour: Vec::new(),
-        top_contacts: Vec::new(),
+pub async fn get_insights(
+    state: State<'_, AppState>,
+    chat_id: Option<i64>,
+) -> Result<InsightsDto, String> {
+    let indexer = state.indexer.clone();
+    super::run_blocking(move || {
+        let guard = indexer.lock().map_err(|e| e.to_string())?;
+        let data = guard
+            .db()
+            .insights(chat_id)
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(InsightsDto::from(data))
     })
+    .await
 }

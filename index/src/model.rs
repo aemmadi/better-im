@@ -88,6 +88,64 @@ impl Default for SearchOpts {
     }
 }
 
+/// One extracted shared link, produced by [`IndexDb::list_links`](crate::db::IndexDb::list_links).
+/// A message with several URLs yields one `LinkRow` per URL.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkRow {
+    /// Source `message.ROWID` the link came from.
+    pub message_id: i64,
+    /// Chat the message belongs to (`chat.ROWID`), when known.
+    pub chat_id: Option<i64>,
+    /// The extracted (and normalized) URL.
+    pub url: String,
+    /// Message timestamp (UTC), when known.
+    pub timestamp: Option<DateTime<Utc>>,
+    /// Sender identifier; `None` when the message is from the database owner.
+    pub sender: Option<String>,
+    /// Whether the database owner sent the message.
+    pub is_from_me: bool,
+    /// Chat display label (custom name, else identifier).
+    pub chat_name: Option<String>,
+}
+
+/// Messages sent on one calendar day (local time, `YYYY-MM-DD`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DayCount {
+    pub date: String,
+    pub count: i64,
+}
+
+/// Messages sent in one hour of the day (local time, `0..=23`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HourCount {
+    pub hour: i32,
+    pub count: i64,
+}
+
+/// A correspondent ranked by inbound (received) message volume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactCount {
+    /// Raw sender handle (phone/email).
+    pub handle: String,
+    pub count: i64,
+}
+
+/// Aggregate stats for one conversation or the whole corpus, produced by
+/// [`IndexDb::insights`](crate::db::IndexDb::insights).
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsightsData {
+    pub total_messages: i64,
+    pub sent_count: i64,
+    pub received_count: i64,
+    /// Earliest message timestamp (UTC), when any.
+    pub first_message: Option<DateTime<Utc>>,
+    /// Latest message timestamp (UTC), when any.
+    pub last_message: Option<DateTime<Utc>>,
+    pub by_day: Vec<DayCount>,
+    pub by_hour: Vec<HourCount>,
+    pub top_contacts: Vec<ContactCount>,
+}
+
 /// Outcome of a `full_reindex` / `incremental_sync` run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncReport {

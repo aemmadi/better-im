@@ -1,19 +1,12 @@
 //! The indexer: streams decoded messages from a `chat.db` into the index.
 
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
 use better_im_core::{ChatReader, ScannedMessage};
-use regex::Regex;
 
 use crate::db::IndexDb;
 use crate::model::{IndexedMessage, SearchOpts, SearchResult, SyncReport};
 use crate::query::parse_query;
-
-/// URL detector for the `has:link` flag (computed once at index time).
-static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:https?://|www\.)\S+").expect("valid URL regex")
-});
 
 /// Builds and maintains the search index for a single source `chat.db`.
 ///
@@ -122,7 +115,7 @@ impl Indexer {
 /// `has_link` flag from the body text.
 fn to_indexed(scanned: &ScannedMessage) -> IndexedMessage {
     let m = &scanned.message;
-    let has_link = m.text.as_deref().is_some_and(|t| URL_RE.is_match(t));
+    let has_link = m.text.as_deref().is_some_and(crate::urls::has_url);
     IndexedMessage {
         id: m.id,
         guid: m.guid.clone(),

@@ -105,6 +105,31 @@ pub struct ScannedMessage {
     pub has_photo: bool,
 }
 
+/// One attachment surfaced for the media gallery (Phase 4 `list_media`).
+///
+/// Carries the raw on-disk `path` (typically `~/Library/Messages/Attachments/…`)
+/// and the original `transfer_name`; the app layer expands `~`, checks existence,
+/// and classifies a `kind` from the MIME type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaAttachment {
+    /// Source `message.ROWID` the attachment belongs to.
+    pub message_id: i64,
+    /// A chat the message is joined to (`chat.ROWID`), when resolvable.
+    pub chat_id: Option<i64>,
+    /// Raw on-disk path (`attachment.filename`), usually `~`-relative.
+    pub path: Option<String>,
+    /// Original transfer filename (`attachment.transfer_name`) for display.
+    pub transfer_name: Option<String>,
+    /// MIME type (`attachment.mime_type`), when known.
+    pub mime_type: Option<String>,
+    /// Message timestamp (UTC), when known.
+    pub timestamp: Option<DateTime<Utc>>,
+    /// Sender identifier (phone/email); `None` when [`is_from_me`](Self::is_from_me).
+    pub sender: Option<String>,
+    /// Whether the database owner sent the message.
+    pub is_from_me: bool,
+}
+
 /// A read-only handle to an iMessage `chat.db`.
 ///
 /// Construct with [`ChatReader::open`]. All queries are read-only; the
@@ -495,6 +520,122 @@ impl ChatReader {
             set.insert(row? as i32);
         }
         Ok(set)
+    }
+
+    /// List attachments newest-first, optionally scoped to a single chat.
+    ///
+    /// Reads the `attachment` + `message_attachment_join` tables (which live in
+    /// the source `chat.db`, not the index), joined to `message` for timestamp /
+    /// sender / direction. Returns raw paths and MIME types; the app layer
+    /// resolves `~`, checks existence, and classifies the media `kind`.
+    ///
+    /// # Errors
+    /// Returns an error if the query cannot be prepared or executed.
+    pub fn list_attachments(
+        &self,
+        chat_id: Option<i64>,
+        limit: usize,
+        offset: usize,
+    ) -> anyhow::Result<Vec<MediaAttachment>> {
+        // Raw per-row fields; handle resolution happens after the borrow of the
+        // statement ends (it needs `&self.handles`).
+        struct Raw {
+            message_id: i64,
+            chat_id: Option<i64>,
+            path: Option<String>,
+            transfer_name: Option<String>,
+            mime_type: Option<String>,
+            date: i64,
+            is_from_me: bool,
+            handle_id: Option<i32>,
+        }
+
+        let mut raws: Vec<Raw> = Vec::new();
+        match chat_id {
+            // Per-chat: join through `chat_message_join` filtered to the chat.
+            Some(cid) => {
+                let sql = "SELECT m.ROWID, a.filename, a.transfer_name, a.mime_type, \
+                                  m.date, m.is_from_me, m.handle_id \
+                           FROM attachment a \
+                           JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID \
+                           JOIN message m ON m.ROWID = maj.message_id \
+                           JOIN chat_message_join cmj ON cmj.message_id = m.ROWID AND cmj.chat_id = ?1 \
+                           ORDER BY m.date DESC, m.ROWID DESC \
+                           LIMIT ?2 OFFSET ?3";
+                let cid_i32 = i32::try_from(cid).unwrap_or(i32::MAX);
+                let mut stmt = self.db.prepare(sql)?;
+                let rows = stmt.query_map(
+                    rusqlite::params![cid_i32, limit as i64, offset as i64],
+                    |row| {
+                        Ok(Raw {
+                            message_id: row.get(0)?,
+                            chat_id: Some(cid),
+                            path: row.get(1)?,
+                            transfer_name: row.get(2)?,
+                            mime_type: row.get(3)?,
+                            date: row.get(4)?,
+                            is_from_me: row.get::<_, i64>(5)? != 0,
+                            handle_id: row.get::<_, Option<i64>>(6)?.map(|v| v as i32),
+                        })
+                    },
+                )?;
+                for r in rows {
+                    raws.push(r?);
+                }
+            }
+            // Global: pick one chat per message via a scalar subquery so a
+            // message joined to duplicate chats is not surfaced twice.
+            None => {
+                let sql = "SELECT m.ROWID, \
+                                  (SELECT cmj.chat_id FROM chat_message_join cmj \
+                                    WHERE cmj.message_id = m.ROWID LIMIT 1), \
+                                  a.filename, a.transfer_name, a.mime_type, \
+                                  m.date, m.is_from_me, m.handle_id \
+                           FROM attachment a \
+                           JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID \
+                           JOIN message m ON m.ROWID = maj.message_id \
+                           ORDER BY m.date DESC, m.ROWID DESC \
+                           LIMIT ?1 OFFSET ?2";
+                let mut stmt = self.db.prepare(sql)?;
+                let rows =
+                    stmt.query_map(rusqlite::params![limit as i64, offset as i64], |row| {
+                        Ok(Raw {
+                            message_id: row.get(0)?,
+                            chat_id: row.get(1)?,
+                            path: row.get(2)?,
+                            transfer_name: row.get(3)?,
+                            mime_type: row.get(4)?,
+                            date: row.get(5)?,
+                            is_from_me: row.get::<_, i64>(6)? != 0,
+                            handle_id: row.get::<_, Option<i64>>(7)?.map(|v| v as i32),
+                        })
+                    })?;
+                for r in rows {
+                    raws.push(r?);
+                }
+            }
+        }
+
+        Ok(raws
+            .into_iter()
+            .map(|r| {
+                let sender = if r.is_from_me {
+                    None
+                } else {
+                    self.handle_identifier(r.handle_id)
+                };
+                MediaAttachment {
+                    message_id: r.message_id,
+                    chat_id: r.chat_id,
+                    path: r.path,
+                    transfer_name: r.transfer_name,
+                    mime_type: r.mime_type,
+                    timestamp: apple_time_to_utc(r.date),
+                    sender,
+                    is_from_me: r.is_from_me,
+                }
+            })
+            .collect())
     }
 
     /// Borrow the underlying read-only connection (escape hatch for callers

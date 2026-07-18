@@ -8,7 +8,10 @@ use chrono::Utc;
 use rusqlite::types::Value;
 use rusqlite::{params_from_iter, Connection, Row};
 
-use crate::model::{IndexedMessage, SearchOpts, SearchResult};
+use crate::model::{
+    ContactCount, DayCount, HourCount, IndexedMessage, InsightsData, LinkRow, SearchOpts,
+    SearchResult,
+};
 use crate::query::{Filters, ParsedQuery};
 use crate::schema::SCHEMA;
 
@@ -278,6 +281,188 @@ impl IndexDb {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// List shared links, newest-first, one [`LinkRow`] per URL. `chat_id = None`
+    /// spans all conversations; `limit`/`offset` paginate at **URL** granularity.
+    ///
+    /// Every `has_link` message yields at least one URL (the same regex sets the
+    /// flag and extracts here), so fetching the first `offset + limit` such
+    /// messages is enough to satisfy any URL window without scanning the corpus.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn list_links(
+        &self,
+        chat_id: Option<i64>,
+        limit: usize,
+        offset: usize,
+    ) -> anyhow::Result<Vec<LinkRow>> {
+        let mut sql = String::from(
+            "SELECT m.id, m.chat_id, m.text, m.ts_millis, m.sender, m.is_from_me, m.chat_name \
+             FROM messages m \
+             WHERE m.has_link = 1 AND m.text IS NOT NULL",
+        );
+        let mut params: Vec<Value> = Vec::new();
+        if let Some(cid) = chat_id {
+            sql.push_str(" AND m.chat_id = ?");
+            params.push(Value::Integer(cid));
+        }
+        sql.push_str(" ORDER BY m.ts_millis DESC, m.id DESC LIMIT ?");
+        // Over-fetch enough messages to cover the requested URL window.
+        params.push(Value::Integer(offset.saturating_add(limit) as i64));
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(params), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)? != 0,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+
+        let mut out: Vec<LinkRow> = Vec::new();
+        for row in rows {
+            let (id, chat_id, text, ts_millis, sender, is_from_me, chat_name) = row?;
+            let Some(text) = text else { continue };
+            for url in crate::urls::extract_urls(&text) {
+                out.push(LinkRow {
+                    message_id: id,
+                    chat_id,
+                    url,
+                    timestamp: IndexedMessage::datetime_from_millis(ts_millis),
+                    sender: sender.clone(),
+                    is_from_me,
+                    chat_name: chat_name.clone(),
+                });
+            }
+        }
+        // URL-level pagination over the flattened, newest-first list.
+        Ok(out.into_iter().skip(offset).take(limit).collect())
+    }
+
+    /// Merged newest-first feed across every conversation, keyset-paginated on an
+    /// exclusive `before_millis` cursor (`None` starts at the most recent).
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn timeline(
+        &self,
+        before_millis: Option<i64>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<IndexedMessage>> {
+        let mut sql = format!("SELECT {MESSAGE_SELECT} FROM messages m WHERE m.ts_millis > 0");
+        let mut params: Vec<Value> = Vec::new();
+        if let Some(before) = before_millis {
+            sql.push_str(" AND m.ts_millis < ?");
+            params.push(Value::Integer(before));
+        }
+        sql.push_str(" ORDER BY m.ts_millis DESC, m.id DESC LIMIT ?");
+        params.push(Value::Integer(limit as i64));
+        self.collect_messages(&sql, params_from_iter(params))
+    }
+
+    /// Aggregate stats for one conversation (`chat_id = Some`) or the whole
+    /// corpus (`None`): totals, sent/received, first/last timestamp, per-day and
+    /// per-hour histograms (local time), and the top inbound correspondents.
+    ///
+    /// # Errors
+    /// Returns an error if any aggregate query fails.
+    pub fn insights(&self, chat_id: Option<i64>) -> anyhow::Result<InsightsData> {
+        // Optional `AND m.chat_id = ?1` shared by every aggregate below.
+        let (chat_clause, chat_param): (&str, Vec<Value>) = match chat_id {
+            Some(cid) => (" AND m.chat_id = ?1", vec![Value::Integer(cid)]),
+            None => ("", Vec::new()),
+        };
+
+        // Totals + sent/received + min/max timestamp in a single scan.
+        let totals_sql = format!(
+            "SELECT COUNT(*), \
+                    COALESCE(SUM(CASE WHEN m.is_from_me = 1 THEN 1 ELSE 0 END), 0), \
+                    COALESCE(SUM(CASE WHEN m.is_from_me = 0 THEN 1 ELSE 0 END), 0), \
+                    MIN(CASE WHEN m.ts_millis > 0 THEN m.ts_millis END), \
+                    MAX(CASE WHEN m.ts_millis > 0 THEN m.ts_millis END) \
+             FROM messages m WHERE 1 = 1{chat_clause}"
+        );
+        let (total_messages, sent_count, received_count, min_ts, max_ts) = self.conn.query_row(
+            &totals_sql,
+            params_from_iter(chat_param.iter().cloned()),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            },
+        )?;
+
+        // Per-day histogram (local calendar day).
+        let by_day_sql = format!(
+            "SELECT strftime('%Y-%m-%d', m.ts_millis / 1000, 'unixepoch', 'localtime') AS day, \
+                    COUNT(*) \
+             FROM messages m WHERE m.ts_millis > 0{chat_clause} \
+             GROUP BY day ORDER BY day"
+        );
+        let mut by_day_stmt = self.conn.prepare(&by_day_sql)?;
+        let by_day = by_day_stmt
+            .query_map(params_from_iter(chat_param.iter().cloned()), |row| {
+                Ok(DayCount {
+                    date: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Per-hour histogram (local hour, 0..=23).
+        let by_hour_sql = format!(
+            "SELECT CAST(strftime('%H', m.ts_millis / 1000, 'unixepoch', 'localtime') AS INTEGER) \
+                    AS hour, COUNT(*) \
+             FROM messages m WHERE m.ts_millis > 0{chat_clause} \
+             GROUP BY hour ORDER BY hour"
+        );
+        let mut by_hour_stmt = self.conn.prepare(&by_hour_sql)?;
+        let by_hour = by_hour_stmt
+            .query_map(params_from_iter(chat_param.iter().cloned()), |row| {
+                Ok(HourCount {
+                    hour: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Top inbound correspondents.
+        let top_sql = format!(
+            "SELECT m.sender, COUNT(*) AS c \
+             FROM messages m \
+             WHERE m.is_from_me = 0 AND m.sender IS NOT NULL{chat_clause} \
+             GROUP BY m.sender ORDER BY c DESC, m.sender ASC LIMIT 10"
+        );
+        let mut top_stmt = self.conn.prepare(&top_sql)?;
+        let top_contacts = top_stmt
+            .query_map(params_from_iter(chat_param.iter().cloned()), |row| {
+                Ok(ContactCount {
+                    handle: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        Ok(InsightsData {
+            total_messages,
+            sent_count,
+            received_count,
+            first_message: min_ts.and_then(IndexedMessage::datetime_from_millis),
+            last_message: max_ts.and_then(IndexedMessage::datetime_from_millis),
+            by_day,
+            by_hour,
+            top_contacts,
+        })
     }
 }
 
